@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.3 – 2026-10-04
+
+- zwei sichtbare read-only Statusvariablen direkt unter der Instanz ergänzt: **Person erkannt** und **Nachtfreigabe**
+- `Person erkannt` folgt dem internen Dahua-Personenstatus START/STOP
+- `Nachtfreigabe` zeigt die tatsächlich verwendete astronomische Freigabe aus Sonnenaufgang/Sonnenuntergang
+- beide Variablen werden bei bestehenden Instanzen beim Update automatisch angelegt und sofort synchronisiert
+- Schaltlogik, 180-s-Nachlauf, LCN-Pfad und Dahua-Digest-Verbindung bleiben unverändert
+
 ## 0.1.2
 
 - Dahua-Digest-Handshake korrigiert: Die Kamera beantwortet die erste Anfrage mit `401` und `Connection: close`. Der authentifizierte Request wird jetzt ausdrücklich über eine **frische TCP-Verbindung** gesendet.

@@ -1,6 +1,6 @@
 # Außenlicht Automatik 2 – IP-Symcon 9 / Dahua / Terrasse / LCN
 
-Version **0.1.2**.
+Version **0.1.3**.
 
 ## Ziel
 
@@ -131,6 +131,16 @@ Nach dem Update:
 
 `ApplyChanges()` richtet ausschließlich Nachrichten, Timer und die Dahua-Verbindung ein. Es wird dabei **kein LCN-Lichtbefehl** gesendet. Falls nach einem Neustart bereits Tageszeit ist und noch ein gespeichertes Automatik-Eigentum besteht, erfolgt eine notwendige Korrektur erst über einen nachgelagerten Timer.
 
+
+
+## Sichtbare Statusvariablen
+
+Ab Version 0.1.3 legt die Instanz zwei read-only Boolean-Variablen direkt unter **Außenlicht Automatik 2** an:
+
+- **Person erkannt** – EIN solange der Dahua-Eventstream eine aktive Personenerkennung meldet.
+- **Nachtfreigabe** – EIN ausschließlich im astronomischen Nachtfenster nach Sonnenuntergang bzw. vor Sonnenaufgang.
+
+Die Variablen dienen nur der Anzeige und Diagnose. Sie besitzen keine Benutzeraktion und ändern die vorhandene Schaltlogik nicht.
 
 ## Dahua-Digest-Verbindungsablauf (0.1.2)
 

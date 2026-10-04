@@ -59,6 +59,10 @@ class AussenlichtAutomatik2 extends IPSModule
         $this->RegisterAttributeInteger('SocketRestartStage', 0);
         $this->RegisterAttributeInteger('LastSocketRestart', 0);
 
+        // Sichtbare, read-only Diagnosevariablen. Keine Aktion freigeben.
+        $this->RegisterVariableBoolean('PersonDetected', 'Person erkannt', '~Switch', 10);
+        $this->RegisterVariableBoolean('NightPermission', 'Nachtfreigabe', '~Switch', 20);
+
         $this->RegisterTimer('OffTimer', 0, 'ALA2_OffTimer($_IPS["TARGET"]);');
         $this->RegisterTimer('SunBoundaryTimer', 0, 'ALA2_SunBoundaryTimer($_IPS["TARGET"]);');
         $this->RegisterTimer('HandshakeTimer', 0, 'ALA2_HandshakeTimer($_IPS["TARGET"]);');
@@ -71,6 +75,11 @@ class AussenlichtAutomatik2 extends IPSModule
     public function ApplyChanges(): void
     {
         parent::ApplyChanges();
+
+        // Auch bei einem Update einer bereits vorhandenen Instanz anlegen.
+        $this->RegisterVariableBoolean('PersonDetected', 'Person erkannt', '~Switch', 10);
+        $this->RegisterVariableBoolean('NightPermission', 'Nachtfreigabe', '~Switch', 20);
+        $this->syncStatusVariables();
 
         $this->SetTimerInterval('HandshakeTimer', 0);
         $this->SetTimerInterval('SocketRestartTimer', 0);
@@ -488,7 +497,7 @@ class AussenlichtAutomatik2 extends IPSModule
         $headers = [
             'GET ' . $uri . ' HTTP/1.1',
             'Host: ' . $hostHeader,
-            'User-Agent: IP-Symcon-AussenlichtAutomatik2/0.1.2',
+            'User-Agent: IP-Symcon-AussenlichtAutomatik2/0.1.3',
             'Accept: multipart/x-mixed-replace, */*',
             'Connection: keep-alive'
         ];
@@ -585,7 +594,7 @@ class AussenlichtAutomatik2 extends IPSModule
 
     private function handlePersonStart(string $source): void
     {
-        $this->WriteAttributeBoolean('PersonActive', true);
+        $this->setPersonActive(true);
         $this->WriteAttributeInteger('OffDue', 0);
         $this->SetTimerInterval('OffTimer', 0);
         $this->debug('Person', 'START via ' . $source);
@@ -623,7 +632,7 @@ class AussenlichtAutomatik2 extends IPSModule
 
     private function handlePersonStop(string $source): void
     {
-        $this->WriteAttributeBoolean('PersonActive', false);
+        $this->setPersonActive(false);
         $this->WriteAttributeBoolean('ManualLockUntilPersonClear', false);
         $this->debug('Person', 'STOP via ' . $source);
 
@@ -636,7 +645,7 @@ class AussenlichtAutomatik2 extends IPSModule
     {
         $this->debug('Person', 'PULSE via ' . $source);
         $this->handlePersonStart($source);
-        $this->WriteAttributeBoolean('PersonActive', false);
+        $this->setPersonActive(false);
         $this->WriteAttributeBoolean('ManualLockUntilPersonClear', false);
         if ($this->ReadAttributeBoolean('AutoOwned')) {
             $this->scheduleOff();
@@ -688,6 +697,7 @@ class AussenlichtAutomatik2 extends IPSModule
     private function handleSunStateChange(string $source): void
     {
         $night = $this->isNight();
+        $this->setStatusVariable('NightPermission', $night);
         $this->debug('Sonne', ($night ? 'Nachtfreigabe AKTIV' : 'Nachtfreigabe GESPERRT') . ' via ' . $source);
         $this->scheduleSunBoundaryTimer();
 
@@ -804,6 +814,30 @@ class AussenlichtAutomatik2 extends IPSModule
         } catch (Throwable $e) {
             $this->debug('Licht', 'Schalten fehlgeschlagen: ' . $e->getMessage());
             return false;
+        }
+    }
+
+    private function setPersonActive(bool $active): void
+    {
+        $this->WriteAttributeBoolean('PersonActive', $active);
+        $this->setStatusVariable('PersonDetected', $active);
+    }
+
+    private function syncStatusVariables(): void
+    {
+        $this->setStatusVariable('PersonDetected', $this->ReadAttributeBoolean('PersonActive'));
+        $this->setStatusVariable('NightPermission', $this->isNight());
+    }
+
+    private function setStatusVariable(string $ident, bool $value): void
+    {
+        try {
+            $variableID = $this->GetIDForIdent($ident);
+            if ($variableID > 0 && IPS_VariableExists($variableID)) {
+                SetValueBoolean($variableID, $value);
+            }
+        } catch (Throwable $e) {
+            $this->debug('Status', $ident . ' konnte nicht aktualisiert werden: ' . $e->getMessage());
         }
     }
 
