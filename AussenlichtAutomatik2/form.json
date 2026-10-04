@@ -1,0 +1,124 @@
+{
+  "elements": [
+    {
+      "type": "CheckBox",
+      "name": "Enabled",
+      "caption": "Automatik aktiv"
+    },
+    {
+      "type": "ExpansionPanel",
+      "caption": "Dahua – JV Terrasse",
+      "expanded": true,
+      "items": [
+        {
+          "type": "ValidationTextBox",
+          "name": "CameraHost",
+          "caption": "Kamera IP / Host"
+        },
+        {
+          "type": "NumberSpinner",
+          "name": "CameraPort",
+          "caption": "HTTP-Port",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        {
+          "type": "ValidationTextBox",
+          "name": "Username",
+          "caption": "Benutzername"
+        },
+        {
+          "type": "PasswordTextBox",
+          "name": "Password",
+          "caption": "Passwort"
+        },
+        {
+          "type": "Label",
+          "caption": "Der Eventstream wird mit codes=[All] geöffnet. Ausgewertet werden SmartMotionHuman sowie Human-Objekte in Dahua-IVS-Ereignissen."
+        }
+      ]
+    },
+    {
+      "type": "ExpansionPanel",
+      "caption": "Nachtfreigabe – Sonnenaufgang / Sonnenuntergang",
+      "expanded": true,
+      "items": [
+        {
+          "type": "SelectVariable",
+          "name": "SunriseVariableID",
+          "caption": "Location Control – Sonnenaufgang",
+          "validVariableTypes": [1]
+        },
+        {
+          "type": "SelectVariable",
+          "name": "SunsetVariableID",
+          "caption": "Location Control – Sonnenuntergang",
+          "validVariableTypes": [1]
+        },
+        {
+          "type": "Label",
+          "caption": "Freigabe ist ausschließlich: nach Sonnenuntergang ODER vor Sonnenaufgang. Die Helligkeits-/Dunkelheitsvariable wird nicht verwendet und kann durch eingeschaltete Lampen daher nichts beeinflussen."
+        },
+        {
+          "type": "Label",
+          "caption": "Schaltbedingung: Person erkannt UND Nachtfreigabe = EIN. Sonnenaufgang entzieht die Freigabe wieder."
+        }
+      ]
+    },
+    {
+      "type": "ExpansionPanel",
+      "caption": "Terrassenlicht / LCN",
+      "expanded": true,
+      "items": [
+        {
+          "type": "SelectVariable",
+          "name": "LightCommandVariableID",
+          "caption": "Schaltvariable – EG Terrasse / Status",
+          "validVariableTypes": [0],
+          "requiredAction": 1
+        },
+        {
+          "type": "SelectVariable",
+          "name": "LightFeedbackVariableID",
+          "caption": "Echte LCN-Rückmeldung – Status Ausgang 1",
+          "validVariableTypes": [0]
+        },
+        {
+          "type": "NumberSpinner",
+          "name": "AfterRunSeconds",
+          "caption": "Nachlauf nach Ende der Personenerkennung (Sekunden)",
+          "minimum": 10,
+          "maximum": 3600
+        },
+        {
+          "type": "Label",
+          "caption": "Die Automatik schaltet nur AUS, wenn sie das Licht selbst eingeschaltet hat. Manuell eingeschaltetes Licht bleibt unangetastet."
+        }
+      ]
+    },
+    {
+      "type": "ExpansionPanel",
+      "caption": "Diagnose",
+      "expanded": false,
+      "items": [
+        {
+          "type": "CheckBox",
+          "name": "DebugEvents",
+          "caption": "Alle Dahua-Ereignisse im Debug ausgeben"
+        }
+      ]
+    }
+  ],
+  "actions": [
+    {
+      "type": "Button",
+      "caption": "Dahua-Verbindung neu anstoßen",
+      "onClick": "ALA2_Reconnect($_IPS['TARGET']);"
+    },
+    {
+      "type": "Button",
+      "caption": "Aktuellen Zustand ins Debug schreiben",
+      "onClick": "ALA2_DumpState($_IPS['TARGET']);"
+    }
+  ]
+}

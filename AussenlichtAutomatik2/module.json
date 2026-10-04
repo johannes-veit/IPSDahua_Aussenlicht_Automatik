@@ -1,0 +1,18 @@
+{
+  "id": "{5E08D4EE-9727-4682-A23E-E8625EB2337E}",
+  "name": "AussenlichtAutomatik2",
+  "type": 3,
+  "vendor": "",
+  "aliases": [
+    "Außenlicht Automatik 2",
+    "Terrassenlicht Automatik"
+  ],
+  "parentRequirements": [
+    "{79827379-F36E-4ADA-8A95-5F8D1DC92FA9}"
+  ],
+  "childRequirements": [],
+  "implemented": [
+    "{018EF6B5-AB94-40C6-AA53-46943E824ACF}"
+  ],
+  "prefix": "ALA2"
+}
