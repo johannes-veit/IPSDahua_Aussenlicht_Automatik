@@ -52,10 +52,17 @@ class AussenlichtAutomatik2 extends IPSModule
         $this->RegisterAttributeBoolean('Streaming', false);
         $this->RegisterAttributeInteger('DigestNC', 0);
         $this->RegisterAttributeString('DigestChallenge', '{}');
+        $this->RegisterAttributeBoolean('AuthPending', false);
+        $this->RegisterAttributeBoolean('LastRequestAuthenticated', false);
+        $this->RegisterAttributeBoolean('AuthBlocked', false);
+        $this->RegisterAttributeInteger('AuthFailureCount', 0);
+        $this->RegisterAttributeInteger('SocketRestartStage', 0);
+        $this->RegisterAttributeInteger('LastSocketRestart', 0);
 
         $this->RegisterTimer('OffTimer', 0, 'ALA2_OffTimer($_IPS["TARGET"]);');
         $this->RegisterTimer('SunBoundaryTimer', 0, 'ALA2_SunBoundaryTimer($_IPS["TARGET"]);');
         $this->RegisterTimer('HandshakeTimer', 0, 'ALA2_HandshakeTimer($_IPS["TARGET"]);');
+        $this->RegisterTimer('SocketRestartTimer', 0, 'ALA2_SocketRestartTimer($_IPS["TARGET"]);');
         $this->RegisterTimer('Watchdog', 15000, 'ALA2_Watchdog($_IPS["TARGET"]);');
 
         $this->RequireParent(self::CLIENT_SOCKET_GUID);
@@ -66,11 +73,19 @@ class AussenlichtAutomatik2 extends IPSModule
         parent::ApplyChanges();
 
         $this->SetTimerInterval('HandshakeTimer', 0);
+        $this->SetTimerInterval('SocketRestartTimer', 0);
         $this->SetTimerInterval('OffTimer', 0);
         $this->SetTimerInterval('SunBoundaryTimer', 0);
         $this->SetBuffer('HttpBuffer', '');
         $this->SetBuffer('EventCarry', '');
         $this->WriteAttributeBoolean('Streaming', false);
+        $this->WriteAttributeBoolean('AuthPending', false);
+        $this->WriteAttributeBoolean('LastRequestAuthenticated', false);
+        $this->WriteAttributeBoolean('AuthBlocked', false);
+        $this->WriteAttributeInteger('AuthFailureCount', 0);
+        $this->WriteAttributeInteger('SocketRestartStage', 0);
+        $this->WriteAttributeString('DigestChallenge', '{}');
+        $this->WriteAttributeInteger('DigestNC', 0);
 
         // 0.1.0 verwendete noch "Ist es Tag". Diese Variable ist bewusst nicht mehr Teil der Logik.
         $legacyDayVar = $this->ReadPropertyInteger('DayVariableID');
@@ -114,8 +129,9 @@ class AussenlichtAutomatik2 extends IPSModule
         $this->scheduleSunBoundaryTimer();
 
         if ($this->ReadPropertyBoolean('Enabled') && $this->cameraConfigurationReady()) {
-            // Kein Lichtbefehl in ApplyChanges(). Es wird nur die Eventverbindung gestartet.
-            $this->SetTimerInterval('HandshakeTimer', 1500);
+            // Kein Lichtbefehl in ApplyChanges(). Für den Dahua-Digest-Handshake wird
+            // bewusst mit einer frischen TCP-Verbindung gestartet.
+            $this->scheduleSocketRestart(500);
         }
     }
 
@@ -174,13 +190,45 @@ class AussenlichtAutomatik2 extends IPSModule
                 $this->debug('Dahua', '401 ohne auswertbare Digest-Challenge');
                 return '';
             }
+
             $this->WriteAttributeString('DigestChallenge', json_encode($challenge));
-            $this->sendEventRequest(true);
+            $wasAuthenticated = $this->ReadAttributeBoolean('LastRequestAuthenticated');
+
+            if (!$wasAuthenticated) {
+                // Dahua antwortet auf die erste Anfrage mit Digest-Challenge und
+                // "Connection: close". Der authentifizierte Request MUSS deshalb
+                // über eine neue TCP-Verbindung gesendet werden.
+                $this->WriteAttributeBoolean('AuthPending', true);
+                $this->debug('Dahua', 'Digest-Challenge empfangen; öffne frischen Socket für authentifizierten Eventstream');
+                $this->scheduleSocketRestart(100);
+                return '';
+            }
+
+            $stale = strtolower((string) ($challenge['stale'] ?? 'false')) === 'true';
+            $failures = $this->ReadAttributeInteger('AuthFailureCount') + 1;
+            $this->WriteAttributeInteger('AuthFailureCount', $failures);
+
+            if ($stale && $failures <= 2) {
+                $this->WriteAttributeBoolean('AuthPending', true);
+                $this->debug('Dahua', 'Digest-Nonce ist stale; einmaliger Neuaufbau mit neuer Challenge');
+                $this->scheduleSocketRestart(100);
+                return '';
+            }
+
+            // Keine Endlosschleife mit falschem Passwort: Dahua-Konten können nach
+            // wiederholten Fehlversuchen temporär gesperrt werden. Erst Speichern oder
+            // der Diagnose-Button hebt diese Sperre im Modul wieder auf.
+            $this->WriteAttributeBoolean('AuthPending', false);
+            $this->WriteAttributeBoolean('AuthBlocked', true);
+            $this->debug('Dahua', 'Digest-Anmeldung abgewiesen. Weitere Anmeldeversuche gestoppt; Benutzername/Passwort prüfen und danach Verbindung neu anstoßen.');
             return '';
         }
 
         if ($status === 200) {
             $this->WriteAttributeBoolean('Streaming', true);
+            $this->WriteAttributeBoolean('AuthPending', false);
+            $this->WriteAttributeBoolean('AuthBlocked', false);
+            $this->WriteAttributeInteger('AuthFailureCount', 0);
             $this->debug('Dahua', 'Eventstream verbunden (HTTP 200, codes=[All])');
             if ($body !== '') {
                 $this->processEventData($body);
@@ -228,7 +276,13 @@ class AussenlichtAutomatik2 extends IPSModule
                 $this->WriteAttributeBoolean('Streaming', false);
                 $this->SetBuffer('HttpBuffer', '');
                 $this->SetBuffer('EventCarry', '');
-                $this->SetTimerInterval('HandshakeTimer', 500);
+                if (!$this->ReadAttributeBoolean('AuthBlocked')) {
+                    // Nach der 401-Challenge steht AuthPending=true. Auf dem frisch
+                    // geöffneten Socket wird dann direkt der Digest-Request gesendet.
+                    $this->SetTimerInterval('HandshakeTimer', 250);
+                }
+            } elseif ($status !== 102) {
+                $this->WriteAttributeBoolean('Streaming', false);
             }
         }
     }
@@ -236,15 +290,67 @@ class AussenlichtAutomatik2 extends IPSModule
     public function HandshakeTimer(): void
     {
         $this->SetTimerInterval('HandshakeTimer', 0);
-        if (!$this->ReadPropertyBoolean('Enabled') || !$this->cameraConfigurationReady()) {
+        if (!$this->ReadPropertyBoolean('Enabled') || !$this->cameraConfigurationReady() || $this->ReadAttributeBoolean('AuthBlocked')) {
+            return;
+        }
+
+        $parentID = $this->getParentID();
+        if ($parentID <= 0 || !IPS_InstanceExists($parentID) || (int) IPS_GetInstance($parentID)['InstanceStatus'] !== 102) {
             return;
         }
         $this->beginHandshake();
     }
 
+    public function SocketRestartTimer(): void
+    {
+        $this->SetTimerInterval('SocketRestartTimer', 0);
+        $parentID = $this->getParentID();
+        if ($parentID <= 0 || !IPS_InstanceExists($parentID)) {
+            $this->WriteAttributeInteger('SocketRestartStage', 0);
+            return;
+        }
+
+        $stage = $this->ReadAttributeInteger('SocketRestartStage');
+        if ($stage === 1) {
+            // Phase 1: die von Dahua nach 401 geschlossene/sterbende Verbindung
+            // auch in Symcon sauber verwerfen.
+            try {
+                IPS_SetProperty($parentID, 'Open', false);
+                IPS_ApplyChanges($parentID);
+            } catch (Throwable $e) {
+                $this->WriteAttributeInteger('SocketRestartStage', 0);
+                $this->debug('Socket', 'Schließen fehlgeschlagen: ' . $e->getMessage());
+                return;
+            }
+            $this->WriteAttributeInteger('SocketRestartStage', 2);
+            $this->SetTimerInterval('SocketRestartTimer', 300);
+            return;
+        }
+
+        if ($stage === 2) {
+            $this->WriteAttributeInteger('SocketRestartStage', 0);
+            if (!$this->ReadPropertyBoolean('Enabled') || !$this->cameraConfigurationReady() || $this->ReadAttributeBoolean('AuthBlocked')) {
+                return;
+            }
+            try {
+                IPS_SetProperty($parentID, 'Host', $this->ReadPropertyString('CameraHost'));
+                IPS_SetProperty($parentID, 'Port', $this->ReadPropertyInteger('CameraPort'));
+                IPS_SetProperty($parentID, 'Open', true);
+                IPS_ApplyChanges($parentID);
+            } catch (Throwable $e) {
+                $this->debug('Socket', 'Öffnen fehlgeschlagen: ' . $e->getMessage());
+                return;
+            }
+            $this->WriteAttributeInteger('LastSocketRestart', time());
+            // Fallback, falls IM_CHANGESTATUS bei sehr schnellem Verbindungsaufbau
+            // nicht mehr beobachtet wird. HandshakeTimer prüft Status 102 selbst.
+            $this->SetTimerInterval('HandshakeTimer', 1000);
+        }
+    }
+
     public function Watchdog(): void
     {
-        if (!$this->ReadPropertyBoolean('Enabled') || !$this->cameraConfigurationReady()) {
+        if (!$this->ReadPropertyBoolean('Enabled') || !$this->cameraConfigurationReady() || $this->ReadAttributeBoolean('AuthBlocked')) {
             return;
         }
 
@@ -254,33 +360,54 @@ class AussenlichtAutomatik2 extends IPSModule
         }
 
         $instance = IPS_GetInstance($parentID);
+        $now = time();
         if ((int) $instance['InstanceStatus'] !== 102) {
+            if ($this->ReadAttributeInteger('SocketRestartStage') === 0
+                && ($now - $this->ReadAttributeInteger('LastSocketRestart')) >= 20) {
+                $this->debug('Watchdog', 'Client Socket nicht aktiv; kontrollierter Neuaufbau');
+                $this->scheduleSocketRestart(100);
+            }
             return;
         }
 
-        $now = time();
         $lastRx = $this->ReadAttributeInteger('LastCameraRx');
         $lastReq = $this->ReadAttributeInteger('LastHttpRequest');
         $streaming = $this->ReadAttributeBoolean('Streaming');
 
         if ($streaming && $lastRx > 0 && ($now - $lastRx) > 25) {
-            $this->debug('Watchdog', 'Kein Dahua-Heartbeat >25 s; neuer HTTP-Handshake');
-            $this->beginHandshake();
+            // Niemals einen zweiten HTTP-Request in einen bestehenden/halb toten
+            // Eventstream schreiben. Stattdessen TCP sauber neu aufbauen.
+            $this->debug('Watchdog', 'Kein Dahua-Heartbeat >25 s; Eventstream wird mit frischem Socket neu aufgebaut');
+            $this->WriteAttributeBoolean('Streaming', false);
+            $this->WriteAttributeBoolean('AuthPending', false);
+            $this->WriteAttributeBoolean('LastRequestAuthenticated', false);
+            $this->WriteAttributeInteger('DigestNC', 0);
+            $this->WriteAttributeString('DigestChallenge', '{}');
+            $this->scheduleSocketRestart(100);
             return;
         }
 
-        if (!$streaming && ($lastReq === 0 || ($now - $lastReq) > 12)) {
-            $this->beginHandshake();
+        if (!$streaming && ($lastReq === 0 || ($now - $lastReq) > 12)
+            && $this->ReadAttributeInteger('SocketRestartStage') === 0) {
+            // Timeout während Challenge/Auth ebenfalls nur über eine neue TCP-Verbindung.
+            $this->debug('Watchdog', 'Dahua-Handshake ohne Antwort; frischer Socket wird aufgebaut');
+            $this->scheduleSocketRestart(100);
         }
     }
 
     public function Reconnect(): void
     {
         $this->WriteAttributeBoolean('Streaming', false);
+        $this->WriteAttributeBoolean('AuthPending', false);
+        $this->WriteAttributeBoolean('AuthBlocked', false);
+        $this->WriteAttributeBoolean('LastRequestAuthenticated', false);
+        $this->WriteAttributeInteger('AuthFailureCount', 0);
+        $this->WriteAttributeInteger('DigestNC', 0);
+        $this->WriteAttributeString('DigestChallenge', '{}');
         $this->WriteAttributeInteger('LastCameraRx', 0);
         $this->SetBuffer('HttpBuffer', '');
         $this->SetBuffer('EventCarry', '');
-        $this->beginHandshake();
+        $this->scheduleSocketRestart(100);
     }
 
     public function DumpState(): void
@@ -296,6 +423,9 @@ class AussenlichtAutomatik2 extends IPSModule
             'LightFeedback' => $this->getLightFeedback(),
             'OffDue' => $this->ReadAttributeInteger('OffDue'),
             'Streaming' => $this->ReadAttributeBoolean('Streaming'),
+            'AuthPending' => $this->ReadAttributeBoolean('AuthPending'),
+            'AuthBlocked' => $this->ReadAttributeBoolean('AuthBlocked'),
+            'SocketRestartStage' => $this->ReadAttributeInteger('SocketRestartStage'),
             'LastCameraRx' => $this->ReadAttributeInteger('LastCameraRx')
         ];
         $this->SendDebug('State', json_encode($state, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), 0);
@@ -339,10 +469,13 @@ class AussenlichtAutomatik2 extends IPSModule
 
     private function beginHandshake(): void
     {
+        if ($this->ReadAttributeBoolean('AuthBlocked')) {
+            return;
+        }
         $this->WriteAttributeBoolean('Streaming', false);
         $this->SetBuffer('HttpBuffer', '');
         $this->SetBuffer('EventCarry', '');
-        $this->sendEventRequest(false);
+        $this->sendEventRequest($this->ReadAttributeBoolean('AuthPending'));
     }
 
     private function sendEventRequest(bool $authenticated): void
@@ -355,7 +488,7 @@ class AussenlichtAutomatik2 extends IPSModule
         $headers = [
             'GET ' . $uri . ' HTTP/1.1',
             'Host: ' . $hostHeader,
-            'User-Agent: IP-Symcon-AussenlichtAutomatik2/0.1.1',
+            'User-Agent: IP-Symcon-AussenlichtAutomatik2/0.1.2',
             'Accept: multipart/x-mixed-replace, */*',
             'Connection: keep-alive'
         ];
@@ -392,6 +525,7 @@ class AussenlichtAutomatik2 extends IPSModule
             'Buffer' => $request
         ]);
 
+        $this->WriteAttributeBoolean('LastRequestAuthenticated', $authenticated);
         $this->WriteAttributeInteger('LastHttpRequest', time());
         try {
             $this->SendDataToParent($payload);
@@ -399,6 +533,18 @@ class AussenlichtAutomatik2 extends IPSModule
         } catch (Throwable $e) {
             $this->debug('HTTP', 'Senden fehlgeschlagen: ' . $e->getMessage());
         }
+    }
+
+    private function scheduleSocketRestart(int $delayMs = 100): void
+    {
+        if (!$this->ReadPropertyBoolean('Enabled') || !$this->cameraConfigurationReady()) {
+            return;
+        }
+        if ($this->ReadAttributeInteger('SocketRestartStage') !== 0) {
+            return;
+        }
+        $this->WriteAttributeInteger('SocketRestartStage', 1);
+        $this->SetTimerInterval('SocketRestartTimer', max(50, $delayMs));
     }
 
     /**

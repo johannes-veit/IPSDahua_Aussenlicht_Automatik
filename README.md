@@ -1,6 +1,6 @@
 # Außenlicht Automatik 2 – IP-Symcon 9 / Dahua / Terrasse / LCN
 
-Version **0.1.1**.
+Version **0.1.2**.
 
 ## Ziel
 
@@ -54,7 +54,7 @@ Im Konfigurationsformular werden aus der vorhandenen IP-Symcon-Instanz **Locatio
 - `Sonnenaufgang`
 - `Sonnenuntergang`
 
-Die frühere Booleanvariable `Ist es Tag` wird ab Version 0.1.1 **nicht mehr ausgewertet**.
+Die frühere Booleanvariable `Ist es Tag` wird ab Version 0.1.2 **nicht mehr ausgewertet**.
 
 Auch eine Helligkeits-, Dämmerungs- oder Dunkelheitsvariable wird nicht benutzt.
 
@@ -130,3 +130,15 @@ Nach dem Update:
 ## Kein Hardwarebefehl bei Update/ApplyChanges
 
 `ApplyChanges()` richtet ausschließlich Nachrichten, Timer und die Dahua-Verbindung ein. Es wird dabei **kein LCN-Lichtbefehl** gesendet. Falls nach einem Neustart bereits Tageszeit ist und noch ein gespeichertes Automatik-Eigentum besteht, erfolgt eine notwendige Korrektur erst über einen nachgelagerten Timer.
+
+
+## Dahua-Digest-Verbindungsablauf (0.1.2)
+
+Dahua beendet die erste, noch nicht authentifizierte HTTP-Verbindung nach der Digest-Challenge mit `401 Unauthorized` und `Connection: close`. Deshalb verwendet das Modul bewusst zwei TCP-Verbindungen:
+
+1. neue Verbindung → unauthentifizierter GET → Digest-Challenge,
+2. Client Socket schließen/neu öffnen,
+3. authentifizierter GET mit der Challenge → `HTTP 200`,
+4. dieselbe zweite Verbindung bleibt anschließend als `codes=[All]`-Eventstream offen.
+
+Ein authentifizierter 401 mit falschen Zugangsdaten wird **nicht** endlos wiederholt. Das verhindert unnötige Fehlversuche bzw. eine mögliche Sperre des Dahua-Benutzers.

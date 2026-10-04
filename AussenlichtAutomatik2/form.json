@@ -113,12 +113,12 @@
     {
       "type": "Button",
       "caption": "Dahua-Verbindung neu anstoßen",
-      "onClick": "ALA2_Reconnect($_IPS['TARGET']);"
+      "onClick": "ALA2_Reconnect($id);"
     },
     {
       "type": "Button",
       "caption": "Aktuellen Zustand ins Debug schreiben",
-      "onClick": "ALA2_DumpState($_IPS['TARGET']);"
+      "onClick": "ALA2_DumpState($id);"
     }
   ]
 }

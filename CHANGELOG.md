@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.2
+
+- Dahua-Digest-Handshake korrigiert: Die Kamera beantwortet die erste Anfrage mit `401` und `Connection: close`. Der authentifizierte Request wird jetzt ausdrücklich über eine **frische TCP-Verbindung** gesendet.
+- Client Socket wird für den Digest-Übergang kontrolliert geschlossen und neu geöffnet; dadurch bleibt er nach erfolgreichem HTTP-200-Eventstream dauerhaft aktiv.
+- Watchdog kann einen fehlerhaften Client Socket kontrolliert neu aufbauen.
+- Schutz gegen Passwort-Endlosschleifen: Ein authentifizierter 401 ohne `stale=true` stoppt weitere Loginversuche bis Speichern/Neuverbinden.
+- Diagnose-Buttons korrigiert: statisches Modulformular verwendet `$id` statt `$_IPS['TARGET']`.
+- `.gitattributes` ergänzt; Textdateien bleiben auf LF.
+
 ## 0.1.1 – 2026-10-04
 
 - Dunkelheits-/Helligkeitsfreigabe vollständig aus der aktiven Schaltlogik entfernt
