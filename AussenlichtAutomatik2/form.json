@@ -3,11 +3,11 @@
     {
       "type": "CheckBox",
       "name": "Enabled",
-      "caption": "Automatik aktiv"
+      "caption": "Instanz aktiv"
     },
     {
       "type": "ExpansionPanel",
-      "caption": "Dahua – JV Terrasse",
+      "caption": "Dahua-Kamera / Personenerkennung",
       "expanded": true,
       "items": [
         {
@@ -34,15 +34,24 @@
         },
         {
           "type": "Label",
-          "caption": "Der Eventstream wird mit codes=[All] geöffnet. Ausgewertet werden SmartMotionHuman sowie Human-Objekte in Dahua-IVS-Ereignissen."
+          "caption": "Pro Dahua-Kamera eine eigene Instanz anlegen. Der Eventstream wird mit codes=[All] geöffnet; ausgewertet werden SmartMotionHuman sowie Human-Objekte in Dahua-IVS-Ereignissen. Die sichtbare Variable 'Person erkannt' steht immer zur Verfügung."
         }
       ]
     },
     {
       "type": "ExpansionPanel",
-      "caption": "Nachtfreigabe – Sonnenaufgang / Sonnenuntergang",
+      "caption": "Optionale Lichtautomatik",
       "expanded": true,
       "items": [
+        {
+          "type": "CheckBox",
+          "name": "LightAutomationEnabled",
+          "caption": "Personenerkennung zusätzlich für Lichtautomatik verwenden"
+        },
+        {
+          "type": "Label",
+          "caption": "AUS = reine Personenerkennung. Dann werden Sonnenzeiten und Lichtvariablen vollständig ignoriert und es wird kein Lichtbefehl gesendet."
+        },
         {
           "type": "SelectVariable",
           "name": "SunriseVariableID",
@@ -56,31 +65,16 @@
           "validVariableTypes": [1]
         },
         {
-          "type": "Label",
-          "caption": "Freigabe ist ausschließlich: nach Sonnenuntergang ODER vor Sonnenaufgang. Die Helligkeits-/Dunkelheitsvariable wird nicht verwendet und kann durch eingeschaltete Lampen daher nichts beeinflussen."
-        },
-        {
-          "type": "Label",
-          "caption": "Schaltbedingung: Person erkannt UND Nachtfreigabe = EIN. Sonnenaufgang entzieht die Freigabe wieder."
-        }
-      ]
-    },
-    {
-      "type": "ExpansionPanel",
-      "caption": "Terrassenlicht / LCN",
-      "expanded": true,
-      "items": [
-        {
           "type": "SelectVariable",
           "name": "LightCommandVariableID",
-          "caption": "Schaltvariable – EG Terrasse / Status",
+          "caption": "Licht-Schaltvariable mit Aktion (z. B. LCNLight Status)",
           "validVariableTypes": [0],
           "requiredAction": 1
         },
         {
           "type": "SelectVariable",
           "name": "LightFeedbackVariableID",
-          "caption": "Echte LCN-Rückmeldung – Status Ausgang 1",
+          "caption": "Echte Licht-Rückmeldung",
           "validVariableTypes": [0]
         },
         {
@@ -92,7 +86,11 @@
         },
         {
           "type": "Label",
-          "caption": "Die Automatik schaltet nur AUS, wenn sie das Licht selbst eingeschaltet hat. Manuell eingeschaltetes Licht bleibt unangetastet."
+          "caption": "Schaltbedingung bei aktivierter Lichtautomatik: Person erkannt UND nach Sonnenuntergang/vor Sonnenaufgang = Licht EIN. Helligkeits- oder Dunkelheitswerte werden nicht verwendet."
+        },
+        {
+          "type": "Label",
+          "caption": "Die Automatik schaltet nur Licht wieder AUS, das sie selbst eingeschaltet hat. Manuelle Bedienung bzw. GT8 hat Vorrang."
         }
       ]
     },

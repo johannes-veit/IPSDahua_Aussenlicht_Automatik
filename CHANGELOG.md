@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.2.0 – 2026-10-04
+
+- Modul auf **beliebig viele Dahua-Kameras** erweitert: pro Kamera eine eigene Instanz
+- neue Option **Personenerkennung zusätzlich für Lichtautomatik verwenden**
+- Betriebsart **nur Personenerkennung**: keine Sonnenvariablen nötig, keine Lichtvariablen nötig, keine Lichtbefehle
+- Betriebsart **Personenerkennung + Lichtautomatik**: bisherige Sonnenaufgang-/Sonnenuntergangs- und Nachlauflogik bleibt erhalten
+- sichtbare Variable **Person erkannt** ist immer aktiv
+- **Nachtfreigabe** wird bei reiner Personenerkennung ausgeblendet
+- Kamera-IP und Licht-IDs sind für neue Instanzen nicht mehr fest auf die Terrasse vorbelegt
+- bestehende 0.1.x-Instanzen bleiben kompatibel; Lichtautomatik ist aus Kompatibilitätsgründen standardmäßig aktiviert
+- Deaktivieren der Lichtautomatik verwirft Timer/Automatik-Eigentum ohne Hardwarebefehl
+- Modulalias **Dahua Personenerkennung / Lichtautomatik** ergänzt
+- Client Socket bleibt bei unkonfigurierter Kamera geschlossen, statt mit leerem Host in Fehlerstatus zu gehen
+
 ## 0.1.3 – 2026-10-04
 
 - zwei sichtbare read-only Statusvariablen direkt unter der Instanz ergänzt: **Person erkannt** und **Nachtfreigabe**

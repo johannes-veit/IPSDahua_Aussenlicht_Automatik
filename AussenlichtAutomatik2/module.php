@@ -18,12 +18,14 @@ class AussenlichtAutomatik2 extends IPSModule
         parent::Create();
 
         $this->RegisterPropertyBoolean('Enabled', true);
-        $this->RegisterPropertyString('CameraHost', '192.168.107.110');
+        $this->RegisterPropertyString('CameraHost', '');
         $this->RegisterPropertyInteger('CameraPort', 80);
         $this->RegisterPropertyString('Username', '');
         $this->RegisterPropertyString('Password', '');
+        $this->RegisterPropertyBoolean('LightAutomationEnabled', true);
 
         // Nachtfreigabe ausschließlich über astronomische Zeitpunkte aus Location Control.
+        // Wird nur ausgewertet, wenn LightAutomationEnabled = true.
         $this->RegisterPropertyInteger('SunriseVariableID', 0);
         $this->RegisterPropertyInteger('SunsetVariableID', 0);
 
@@ -32,11 +34,9 @@ class AussenlichtAutomatik2 extends IPSModule
         $this->RegisterPropertyInteger('DayVariableID', 0);
         $this->RegisterPropertyBoolean('DarkWhenDayVariableFalse', true);
 
-        // Projektwerte Terrasse:
-        // 48535 = Status der LCNLight-Instanz EG Terrasse (26459), über deren Aktion geschaltet wird.
-        // 44137 = native LCN-Rückmeldung Ausgang 1 der LCN-Ausgangsinstanz 35859.
-        $this->RegisterPropertyInteger('LightCommandVariableID', 48535);
-        $this->RegisterPropertyInteger('LightFeedbackVariableID', 44137);
+        // Optionale Lichtautomatik: Schaltvariable mit Aktion + separate echte Rückmeldung.
+        $this->RegisterPropertyInteger('LightCommandVariableID', 0);
+        $this->RegisterPropertyInteger('LightFeedbackVariableID', 0);
         $this->RegisterPropertyInteger('AfterRunSeconds', 180);
         $this->RegisterPropertyBoolean('DebugEvents', false);
 
@@ -106,27 +106,36 @@ class AussenlichtAutomatik2 extends IPSModule
             }
         }
 
-        $sunriseVar = $this->ReadPropertyInteger('SunriseVariableID');
-        $sunsetVar = $this->ReadPropertyInteger('SunsetVariableID');
-        if ($this->isIntegerVariable($sunriseVar)) {
-            $this->RegisterMessage($sunriseVar, self::VM_UPDATE_ID);
-        }
-        if ($this->isIntegerVariable($sunsetVar)) {
-            $this->RegisterMessage($sunsetVar, self::VM_UPDATE_ID);
-        }
-
-        $feedbackVar = $this->ReadPropertyInteger('LightFeedbackVariableID');
-        if ($this->isBooleanVariable($feedbackVar)) {
-            $this->RegisterMessage($feedbackVar, self::VM_UPDATE_ID);
-            $current = (bool) GetValue($feedbackVar);
-            $last = $this->ReadAttributeInteger('LastLightFeedback');
-            if ($last !== -1 && $last !== (int) $current && $this->ReadAttributeBoolean('AutoOwned')) {
-                // Während Symcon/Modul inaktiv war, wurde der reale Lichtzustand verändert.
-                // Sicherheit: Eigentum der Automatik verwerfen, niemals blind später ausschalten.
-                $this->WriteAttributeBoolean('AutoOwned', false);
-                $this->WriteAttributeInteger('OffDue', 0);
+        if ($this->lightAutomationEnabled()) {
+            $sunriseVar = $this->ReadPropertyInteger('SunriseVariableID');
+            $sunsetVar = $this->ReadPropertyInteger('SunsetVariableID');
+            if ($this->isIntegerVariable($sunriseVar)) {
+                $this->RegisterMessage($sunriseVar, self::VM_UPDATE_ID);
             }
-            $this->WriteAttributeInteger('LastLightFeedback', (int) $current);
+            if ($this->isIntegerVariable($sunsetVar)) {
+                $this->RegisterMessage($sunsetVar, self::VM_UPDATE_ID);
+            }
+
+            $feedbackVar = $this->ReadPropertyInteger('LightFeedbackVariableID');
+            if ($this->isBooleanVariable($feedbackVar)) {
+                $this->RegisterMessage($feedbackVar, self::VM_UPDATE_ID);
+                $current = (bool) GetValue($feedbackVar);
+                $last = $this->ReadAttributeInteger('LastLightFeedback');
+                if ($last !== -1 && $last !== (int) $current && $this->ReadAttributeBoolean('AutoOwned')) {
+                    // Während Symcon/Modul inaktiv war, wurde der reale Lichtzustand verändert.
+                    // Sicherheit: Eigentum der Automatik verwerfen, niemals blind später ausschalten.
+                    $this->WriteAttributeBoolean('AutoOwned', false);
+                    $this->WriteAttributeInteger('OffDue', 0);
+                }
+                $this->WriteAttributeInteger('LastLightFeedback', (int) $current);
+            }
+        } else {
+            // Reine Personenerkennung: niemals Lichtbefehle oder Sonnen-Timer ausführen.
+            $this->WriteAttributeBoolean('AutoOwned', false);
+            $this->WriteAttributeBoolean('ManualLockUntilPersonClear', false);
+            $this->WriteAttributeInteger('OffDue', 0);
+            $this->SetTimerInterval('OffTimer', 0);
+            $this->SetTimerInterval('SunBoundaryTimer', 0);
         }
 
         $parentID = $this->getParentID();
@@ -146,10 +155,12 @@ class AussenlichtAutomatik2 extends IPSModule
 
     public function GetConfigurationForParent(): string
     {
+        $host = trim($this->ReadPropertyString('CameraHost'));
+        $port = $this->ReadPropertyInteger('CameraPort');
         return json_encode([
-            'Host' => $this->ReadPropertyString('CameraHost'),
-            'Port' => $this->ReadPropertyInteger('CameraPort'),
-            'Open' => $this->ReadPropertyBoolean('Enabled')
+            'Host' => $host,
+            'Port' => $port,
+            'Open' => $this->ReadPropertyBoolean('Enabled') && $this->cameraConfigurationReady()
         ]);
     }
 
@@ -256,12 +267,12 @@ class AussenlichtAutomatik2 extends IPSModule
             $sunsetVar = $this->ReadPropertyInteger('SunsetVariableID');
             $feedbackVar = $this->ReadPropertyInteger('LightFeedbackVariableID');
 
-            if ((int) $SenderID === $sunriseVar || (int) $SenderID === $sunsetVar) {
+            if ($this->lightAutomationEnabled() && ((int) $SenderID === $sunriseVar || (int) $SenderID === $sunsetVar)) {
                 $this->handleSunStateChange('Location Control');
                 return;
             }
 
-            if ((int) $SenderID === $feedbackVar) {
+            if ($this->lightAutomationEnabled() && (int) $SenderID === $feedbackVar) {
                 $changed = true;
                 if (is_array($Data) && array_key_exists(1, $Data)) {
                     $changed = (bool) $Data[1];
@@ -423,6 +434,7 @@ class AussenlichtAutomatik2 extends IPSModule
     {
         $state = [
             'Enabled' => $this->ReadPropertyBoolean('Enabled'),
+            'LightAutomationEnabled' => $this->lightAutomationEnabled(),
             'NightPermission' => $this->isNight(),
             'Sunrise' => $this->getSunTimestamp('SunriseVariableID'),
             'Sunset' => $this->getSunTimestamp('SunsetVariableID'),
@@ -444,6 +456,11 @@ class AussenlichtAutomatik2 extends IPSModule
     {
         $this->SetTimerInterval('OffTimer', 0);
         $this->WriteAttributeInteger('OffDue', 0);
+
+        if (!$this->lightAutomationEnabled()) {
+            $this->WriteAttributeBoolean('AutoOwned', false);
+            return;
+        }
 
         // Nachts hält eine noch aktive Person das Licht an. Nach Sonnenaufgang
         // gilt die UND-Bedingung nicht mehr und ein Automatiklicht darf aus.
@@ -497,7 +514,7 @@ class AussenlichtAutomatik2 extends IPSModule
         $headers = [
             'GET ' . $uri . ' HTTP/1.1',
             'Host: ' . $hostHeader,
-            'User-Agent: IP-Symcon-AussenlichtAutomatik2/0.1.3',
+            'User-Agent: IP-Symcon-AussenlichtAutomatik2/0.2.0',
             'Accept: multipart/x-mixed-replace, */*',
             'Connection: keep-alive'
         ];
@@ -602,6 +619,9 @@ class AussenlichtAutomatik2 extends IPSModule
         if (!$this->ReadPropertyBoolean('Enabled')) {
             return;
         }
+        if (!$this->lightAutomationEnabled()) {
+            return;
+        }
         if ($this->ReadAttributeBoolean('ManualLockUntilPersonClear')) {
             $this->debug('Licht', 'Keine Automatik-EIN: manuelle Sperre bis Ende der aktuellen Personenerkennung');
             return;
@@ -636,7 +656,7 @@ class AussenlichtAutomatik2 extends IPSModule
         $this->WriteAttributeBoolean('ManualLockUntilPersonClear', false);
         $this->debug('Person', 'STOP via ' . $source);
 
-        if ($this->ReadAttributeBoolean('AutoOwned')) {
+        if ($this->lightAutomationEnabled() && $this->ReadAttributeBoolean('AutoOwned')) {
             $this->scheduleOff();
         }
     }
@@ -647,13 +667,17 @@ class AussenlichtAutomatik2 extends IPSModule
         $this->handlePersonStart($source);
         $this->setPersonActive(false);
         $this->WriteAttributeBoolean('ManualLockUntilPersonClear', false);
-        if ($this->ReadAttributeBoolean('AutoOwned')) {
+        if ($this->lightAutomationEnabled() && $this->ReadAttributeBoolean('AutoOwned')) {
             $this->scheduleOff();
         }
     }
 
     private function scheduleOff(): void
     {
+        if (!$this->lightAutomationEnabled()) {
+            return;
+        }
+
         $seconds = max(10, $this->ReadPropertyInteger('AfterRunSeconds'));
         $this->WriteAttributeInteger('OffDue', time() + $seconds);
         $this->SetTimerInterval('OffTimer', $seconds * 1000);
@@ -662,6 +686,13 @@ class AussenlichtAutomatik2 extends IPSModule
 
     private function restoreOffTimer(): void
     {
+        if (!$this->lightAutomationEnabled()) {
+            $this->WriteAttributeBoolean('AutoOwned', false);
+            $this->WriteAttributeInteger('OffDue', 0);
+            $this->SetTimerInterval('OffTimer', 0);
+            return;
+        }
+
         if (!$this->ReadAttributeBoolean('AutoOwned')) {
             return;
         }
@@ -691,11 +722,20 @@ class AussenlichtAutomatik2 extends IPSModule
     public function SunBoundaryTimer(): void
     {
         $this->SetTimerInterval('SunBoundaryTimer', 0);
+        if (!$this->lightAutomationEnabled()) {
+            return;
+        }
         $this->handleSunStateChange('Zeitgrenze');
     }
 
     private function handleSunStateChange(string $source): void
     {
+        if (!$this->lightAutomationEnabled()) {
+            $this->setStatusVariable('NightPermission', false);
+            $this->SetTimerInterval('SunBoundaryTimer', 0);
+            return;
+        }
+
         $night = $this->isNight();
         $this->setStatusVariable('NightPermission', $night);
         $this->debug('Sonne', ($night ? 'Nachtfreigabe AKTIV' : 'Nachtfreigabe GESPERRT') . ' via ' . $source);
@@ -737,6 +777,11 @@ class AussenlichtAutomatik2 extends IPSModule
 
     private function scheduleSunBoundaryTimer(): void
     {
+        if (!$this->lightAutomationEnabled()) {
+            $this->SetTimerInterval('SunBoundaryTimer', 0);
+            return;
+        }
+
         $sunrise = $this->getSunTimestamp('SunriseVariableID');
         $sunset = $this->getSunTimestamp('SunsetVariableID');
         if ($sunrise === null || $sunset === null) {
@@ -756,6 +801,10 @@ class AussenlichtAutomatik2 extends IPSModule
 
     private function handleLightFeedbackChange(): void
     {
+        if (!$this->lightAutomationEnabled()) {
+            return;
+        }
+
         $light = $this->getLightFeedback();
         if ($light === null) {
             return;
@@ -790,6 +839,10 @@ class AussenlichtAutomatik2 extends IPSModule
 
     private function switchLight(bool $on): bool
     {
+        if (!$this->lightAutomationEnabled()) {
+            return false;
+        }
+
         $commandVar = $this->ReadPropertyInteger('LightCommandVariableID');
         if (!$this->isBooleanVariable($commandVar)) {
             $this->debug('Licht', 'Schaltvariable ungültig: #' . $commandVar);
@@ -823,10 +876,24 @@ class AussenlichtAutomatik2 extends IPSModule
         $this->setStatusVariable('PersonDetected', $active);
     }
 
+    private function lightAutomationEnabled(): bool
+    {
+        return $this->ReadPropertyBoolean('LightAutomationEnabled');
+    }
+
     private function syncStatusVariables(): void
     {
         $this->setStatusVariable('PersonDetected', $this->ReadAttributeBoolean('PersonActive'));
-        $this->setStatusVariable('NightPermission', $this->isNight());
+        $this->setStatusVariable('NightPermission', $this->lightAutomationEnabled() ? $this->isNight() : false);
+
+        try {
+            $nightID = $this->GetIDForIdent('NightPermission');
+            if ($nightID > 0 && IPS_VariableExists($nightID)) {
+                IPS_SetHidden($nightID, !$this->lightAutomationEnabled());
+            }
+        } catch (Throwable $e) {
+            $this->debug('Status', 'Sichtbarkeit Nachtfreigabe konnte nicht gesetzt werden: ' . $e->getMessage());
+        }
     }
 
     private function setStatusVariable(string $ident, bool $value): void
@@ -843,6 +910,10 @@ class AussenlichtAutomatik2 extends IPSModule
 
     private function isNight(): bool
     {
+        if (!$this->lightAutomationEnabled()) {
+            return false;
+        }
+
         $sunrise = $this->getSunTimestamp('SunriseVariableID');
         $sunset = $this->getSunTimestamp('SunsetVariableID');
         if ($sunrise === null || $sunset === null) {
@@ -864,6 +935,10 @@ class AussenlichtAutomatik2 extends IPSModule
 
     private function getLightFeedback(): ?bool
     {
+        if (!$this->lightAutomationEnabled()) {
+            return null;
+        }
+
         $varID = $this->ReadPropertyInteger('LightFeedbackVariableID');
         if (!$this->isBooleanVariable($varID)) {
             return null;
