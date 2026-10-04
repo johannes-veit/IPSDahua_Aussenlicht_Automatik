@@ -11,7 +11,8 @@ if ($source === false) {
 $required = [
     "RegisterVariableBoolean('PersonDetected', 'Person erkannt'",
     "RegisterVariableBoolean('NightPermission', 'Nachtfreigabe'",
-    "setPersonActive(true)",
+    'refreshPersonAggregate(',
+    'setPersonActive($newState)',
     "setPersonActive(false)",
     'setStatusVariable(\'NightPermission\', $night)',
     "syncStatusVariables()"

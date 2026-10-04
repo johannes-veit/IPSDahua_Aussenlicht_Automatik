@@ -1,61 +1,66 @@
 # Changelog
 
+## 0.3.0 – 2026-10-04
+
+- Dahua-Parser auf **vollständige mehrzeilige IVS-Ereignisse** erweitert; JSON darf über mehrere TCP-Chunks verteilt sein
+- Multipart-Boundaries und Heartbeats werden robust ignoriert
+- direkte SMD-Erkennung `SmartMotionHuman` sowie Human-/Person-/Pedestrian-Klassifizierung in IVS-Daten vereinheitlicht
+- `CrossLineDetection` und `CrossRegionDetection` mit Human-Objekt unterstützt
+- verschachtelte `Object`-/`Objects[]`-Strukturen unterstützt
+- EventID, RuleID, GroupID und ObjectID werden aus IVS-Daten extrahiert
+- aktive Human-Ereignisse werden getrennt nachgeführt
+- STOP ohne erneute Human-Klassifizierung beendet einen passenden bekannten Human-START
+- explizite Vehicle-/andere Nicht-Human-STOPs löschen keinen parallelen Human-Zustand
+- mehrere gleichzeitig aktive Human-Regeln werden aggregiert; `Person erkannt` bleibt TRUE bis alle beendet sind
+- Human-PULSE wird fünf Sekunden gehalten
+- Stream-/Heartbeat-Verlust verwirft aktive Human-Zustände und verhindert festhängendes `Person erkannt`
+- Streamverlust startet bei automatik-eigenem Licht regulär den Nachlauf
+- Diagnose um aktive Human-Ereignisse, letzte Human-Meldung, IDs und Empfangsalter erweitert
+- Digest-Unterstützung um **SHA-256** und **SHA-256-sess** ergänzt; MD5/MD5-sess bleiben erhalten
+- Nachtfreigabe wird zusätzlich vom Watchdog gegen die aktuellen Sonnenzeiten geprüft
+- Message-Subscriptions für Sonnenaufgang, Sonnenuntergang, Intensitätsrückmeldung und Parent werden bei Konfigurationsänderung sauber aktualisiert
+- Nachlauf-Wiederherstellung nach Neustart/Update abgesichert: Automatik-Eigentum bleibt nicht ohne Ausschaltzeitpunkt bestehen
+- Licht-Schaltvariable bleibt **Boolean mit Aktion**, zusätzlich wird `HasAction()` vor dem Schalten geprüft
+- echte Licht-Rückmeldung bleibt **Integer/Float Intensity**, `0=AUS`, `>0=EIN`
+- ausgelegt für TiOC und `IPC-HFW5442E-ZE` ohne kameramodellspezifische Umschaltung
+- neue Regressionstests für Multi-Line-IVS und parallele Human-Ereignisse
+
+## 0.2.1 – 2026-10-04
+
+- Licht-Schaltvariable ausdrücklich als Boolean-Variable mit Aktion ausgelegt; auch direkter nativer LCN-Ausgang möglich
+- echte Licht-Rückmeldung auf Integer/Float-Intensity umgestellt
+- `0 = AUS`, `> 0 = EIN`
+- Rückmeldung wird nur gelesen, niemals beschrieben
+
 ## 0.2.0 – 2026-10-04
 
-- Modul auf **beliebig viele Dahua-Kameras** erweitert: pro Kamera eine eigene Instanz
-- neue Option **Personenerkennung zusätzlich für Lichtautomatik verwenden**
-- Betriebsart **nur Personenerkennung**: keine Sonnenvariablen nötig, keine Lichtvariablen nötig, keine Lichtbefehle
-- Betriebsart **Personenerkennung + Lichtautomatik**: bisherige Sonnenaufgang-/Sonnenuntergangs- und Nachlauflogik bleibt erhalten
-- sichtbare Variable **Person erkannt** ist immer aktiv
-- **Nachtfreigabe** wird bei reiner Personenerkennung ausgeblendet
-- Kamera-IP und Licht-IDs sind für neue Instanzen nicht mehr fest auf die Terrasse vorbelegt
-- bestehende 0.1.x-Instanzen bleiben kompatibel; Lichtautomatik ist aus Kompatibilitätsgründen standardmäßig aktiviert
-- Deaktivieren der Lichtautomatik verwirft Timer/Automatik-Eigentum ohne Hardwarebefehl
-- Modulalias **Dahua Personenerkennung / Lichtautomatik** ergänzt
-- Client Socket bleibt bei unkonfigurierter Kamera geschlossen, statt mit leerem Host in Fehlerstatus zu gehen
+- Modul auf beliebig viele Dahua-Kameras erweitert: pro Kamera eine eigene Instanz
+- Option **Personenerkennung zusätzlich für Lichtautomatik verwenden**
+- reine Personenerkennung ohne Sonnen-/Lichtpflicht
+- sichtbare Variable **Person erkannt** immer aktiv
+- **Nachtfreigabe** bei reiner Personenerkennung ausgeblendet
+- keine fest verdrahteten Terrassen-IDs für neue Instanzen
 
 ## 0.1.3 – 2026-10-04
 
-- zwei sichtbare read-only Statusvariablen direkt unter der Instanz ergänzt: **Person erkannt** und **Nachtfreigabe**
-- `Person erkannt` folgt dem internen Dahua-Personenstatus START/STOP
-- `Nachtfreigabe` zeigt die tatsächlich verwendete astronomische Freigabe aus Sonnenaufgang/Sonnenuntergang
-- beide Variablen werden bei bestehenden Instanzen beim Update automatisch angelegt und sofort synchronisiert
-- Schaltlogik, 180-s-Nachlauf, LCN-Pfad und Dahua-Digest-Verbindung bleiben unverändert
+- sichtbare read-only Statusvariablen **Person erkannt** und **Nachtfreigabe** ergänzt
 
-## 0.1.2
+## 0.1.2 – 2026-10-04
 
-- Dahua-Digest-Handshake korrigiert: Die Kamera beantwortet die erste Anfrage mit `401` und `Connection: close`. Der authentifizierte Request wird jetzt ausdrücklich über eine **frische TCP-Verbindung** gesendet.
-- Client Socket wird für den Digest-Übergang kontrolliert geschlossen und neu geöffnet; dadurch bleibt er nach erfolgreichem HTTP-200-Eventstream dauerhaft aktiv.
-- Watchdog kann einen fehlerhaften Client Socket kontrolliert neu aufbauen.
-- Schutz gegen Passwort-Endlosschleifen: Ein authentifizierter 401 ohne `stale=true` stoppt weitere Loginversuche bis Speichern/Neuverbinden.
-- Diagnose-Buttons korrigiert: statisches Modulformular verwendet `$id` statt `$_IPS['TARGET']`.
-- `.gitattributes` ergänzt; Textdateien bleiben auf LF.
+- Dahua-Digest-Handshake korrigiert: authentifizierter Request nach `401 Connection: close` über frische TCP-Verbindung
+- kontrollierter Client-Socket-Neuaufbau
+- Schutz gegen Passwort-Endlosschleifen
+- Diagnose-Buttons korrigiert
+- `.gitattributes` mit LF ergänzt
 
 ## 0.1.1 – 2026-10-04
 
-- Dunkelheits-/Helligkeitsfreigabe vollständig aus der aktiven Schaltlogik entfernt
-- Booleanvariable `Ist es Tag` wird nicht mehr ausgewertet
-- neue Nachtfreigabe ausschließlich über Location Control `Sonnenaufgang` und `Sonnenuntergang`
+- Dunkelheits-/Helligkeitsvariable aus der Freigabe entfernt
+- Nachtfreigabe ausschließlich über Sonnenaufgang/Sonnenuntergang
 - Logik: `Person erkannt UND (nach Sonnenuntergang ODER vor Sonnenaufgang)`
-- eigener Grenzzeit-Timer für den Wechsel Sonnenaufgang/Sonnenuntergang
-- Person bereits bei Sonnenuntergang aktiv: Automatik darf ab Sonnenuntergang einschalten
-- Sonnenaufgang beendet die Freigabe; nur automatik-eigenes Licht wird ausgeschaltet
-- manuell eingeschaltetes Licht bleibt auch bei Sonnenaufgang unangetastet
-- Update von 0.1.0 behält alte Properties nur unsichtbar zur Kompatibilität; sie haben keine Wirkung mehr
-- keine LCN-Hardwarebefehle in `ApplyChanges()`
 
 ## 0.1.0 – 2026-10-04
 
-- erste eigenständige IP-Symcon-9-Modulversion
-- Dahua JV Terrasse direkt per HTTP-Digest-Eventstream
-- `codes=[All]`, Heartbeat 5 s
-- Personenerkennung über `SmartMotionHuman` und Human-IVS-Daten
-- ursprüngliche Freigabe über vorhandene Location-Control-Booleanvariable
-- Terrasse schalten über vorhandene LCNLight-Statusvariable `48535`
-- echte LCN-Rückmeldung über `44137`
-- 180-s-Nachlauf
-- erneute Erkennung setzt Nachlauf zurück
-- Automatik-Eigentum verhindert Ausschalten manuell eingeschalteter Beleuchtung
-- GT8/manuelle Zustandsänderung hat Vorrang
-- keine zusätzlichen sichtbaren Statusvariablen
-- keine LCN-Hardwarebefehle in `ApplyChanges()`
+- erste Modulversion für Dahua JV Terrasse
+- Eventstream `codes=[All]`
+- Personenerkennung, LCN-Lichtschaltung und 180-s-Nachlauf

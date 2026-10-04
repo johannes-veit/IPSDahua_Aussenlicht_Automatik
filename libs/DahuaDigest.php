@@ -47,14 +47,19 @@ final class DahuaDigest
             throw new InvalidArgumentException('Digest challenge ohne realm/nonce');
         }
 
-        $ha1 = md5($username . ':' . $realm . ':' . $password);
-        if ($algorithm === 'MD5-SESS') {
-            $ha1 = md5($ha1 . ':' . $nonce . ':' . $cnonce);
-        } elseif ($algorithm !== 'MD5') {
-            throw new InvalidArgumentException('Nicht unterstützter Digest-Algorithmus: ' . $algorithm);
+        $baseAlgorithm = str_ends_with($algorithm, '-SESS') ? substr($algorithm, 0, -5) : $algorithm;
+        $hashAlgorithm = match ($baseAlgorithm) {
+            'MD5' => 'md5',
+            'SHA-256' => 'sha256',
+            default => throw new InvalidArgumentException('Nicht unterstützter Digest-Algorithmus: ' . $algorithm)
+        };
+
+        $ha1 = hash($hashAlgorithm, $username . ':' . $realm . ':' . $password);
+        if (str_ends_with($algorithm, '-SESS')) {
+            $ha1 = hash($hashAlgorithm, $ha1 . ':' . $nonce . ':' . $cnonce);
         }
 
-        $ha2 = md5($method . ':' . $uri);
+        $ha2 = hash($hashAlgorithm, $method . ':' . $uri);
         $nc = sprintf('%08x', max(1, $nonceCount));
 
         $qop = '';
@@ -66,9 +71,9 @@ final class DahuaDigest
         }
 
         if ($qop !== '') {
-            $response = md5($ha1 . ':' . $nonce . ':' . $nc . ':' . $cnonce . ':' . $qop . ':' . $ha2);
+            $response = hash($hashAlgorithm, $ha1 . ':' . $nonce . ':' . $nc . ':' . $cnonce . ':' . $qop . ':' . $ha2);
         } else {
-            $response = md5($ha1 . ':' . $nonce . ':' . $ha2);
+            $response = hash($hashAlgorithm, $ha1 . ':' . $nonce . ':' . $ha2);
         }
 
         $items = [

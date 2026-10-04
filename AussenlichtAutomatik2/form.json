@@ -34,7 +34,7 @@
         },
         {
           "type": "Label",
-          "caption": "Pro Dahua-Kamera eine eigene Instanz anlegen. Der Eventstream wird mit codes=[All] geöffnet; ausgewertet werden SmartMotionHuman sowie Human-Objekte in Dahua-IVS-Ereignissen. Die sichtbare Variable 'Person erkannt' steht immer zur Verfügung."
+          "caption": "Pro Dahua-Kamera eine eigene Instanz anlegen. Der Eventstream läuft mit codes=[All]. Unterstützt werden direkte SmartMotionHuman-Ereignisse sowie mehrzeilige Human-IVS-Ereignisse (u. a. CrossLineDetection/CrossRegionDetection) für TiOC und IPC-HFW5442E-ZE/WizMind."
         }
       ]
     },
@@ -56,26 +56,40 @@
           "type": "SelectVariable",
           "name": "SunriseVariableID",
           "caption": "Location Control – Sonnenaufgang",
-          "validVariableTypes": [1]
+          "validVariableTypes": [
+            1
+          ]
         },
         {
           "type": "SelectVariable",
           "name": "SunsetVariableID",
           "caption": "Location Control – Sonnenuntergang",
-          "validVariableTypes": [1]
+          "validVariableTypes": [
+            1
+          ]
         },
         {
           "type": "SelectVariable",
           "name": "LightCommandVariableID",
-          "caption": "Licht-Schaltvariable mit Aktion (z. B. LCNLight Status)",
-          "validVariableTypes": [0],
+          "caption": "Licht schalten – Status (Boolean mit Aktion; auch nativer LCN-Ausgang)",
+          "validVariableTypes": [
+            0
+          ],
           "requiredAction": 1
         },
         {
           "type": "SelectVariable",
           "name": "LightFeedbackVariableID",
-          "caption": "Echte Licht-Rückmeldung",
-          "validVariableTypes": [0]
+          "caption": "Echte Rückmeldung – Intensität am Ausgang (Integer/Float; 0=AUS, >0=EIN)",
+          "validVariableTypes": [
+            1,
+            2
+          ],
+          "requiredAction": 0
+        },
+        {
+          "type": "Label",
+          "caption": "Schalten: Boolean-Statusvariable mit Aktion auswählen. Rückmeldung: native Intensität/Intensity des realen Ausgangs auswählen; 0 = AUS, jeder Wert > 0 = EIN."
         },
         {
           "type": "NumberSpinner",
@@ -102,7 +116,7 @@
         {
           "type": "CheckBox",
           "name": "DebugEvents",
-          "caption": "Alle Dahua-Ereignisse im Debug ausgeben"
+          "caption": "Alle geparsten Dahua-Ereignisse inkl. Human-Klassifizierung im Debug ausgeben"
         }
       ]
     }

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 require_once dirname(__DIR__) . '/libs/DahuaDigest.php';
 require_once dirname(__DIR__) . '/libs/DahuaEventParser.php';
+require_once dirname(__DIR__) . '/libs/DahuaHumanTracker.php';
 require_once dirname(__DIR__) . '/libs/NightWindow.php';
 
 class AussenlichtAutomatik2 extends IPSModule
@@ -58,6 +59,13 @@ class AussenlichtAutomatik2 extends IPSModule
         $this->RegisterAttributeInteger('AuthFailureCount', 0);
         $this->RegisterAttributeInteger('SocketRestartStage', 0);
         $this->RegisterAttributeInteger('LastSocketRestart', 0);
+        $this->RegisterAttributeString('ActiveHumanEvents', '{}');
+        $this->RegisterAttributeInteger('HumanPulseUntil', 0);
+        $this->RegisterAttributeString('LastHumanEvent', '');
+        $this->RegisterAttributeInteger('RegisteredSunriseID', 0);
+        $this->RegisterAttributeInteger('RegisteredSunsetID', 0);
+        $this->RegisterAttributeInteger('RegisteredFeedbackID', 0);
+        $this->RegisterAttributeInteger('RegisteredParentID', 0);
 
         // Sichtbare, read-only Diagnosevariablen. Keine Aktion freigeben.
         $this->RegisterVariableBoolean('PersonDetected', 'Person erkannt', '~Switch', 10);
@@ -67,6 +75,7 @@ class AussenlichtAutomatik2 extends IPSModule
         $this->RegisterTimer('SunBoundaryTimer', 0, 'ALA2_SunBoundaryTimer($_IPS["TARGET"]);');
         $this->RegisterTimer('HandshakeTimer', 0, 'ALA2_HandshakeTimer($_IPS["TARGET"]);');
         $this->RegisterTimer('SocketRestartTimer', 0, 'ALA2_SocketRestartTimer($_IPS["TARGET"]);');
+        $this->RegisterTimer('PersonStateTimer', 0, 'ALA2_PersonStateTimer($_IPS["TARGET"]);');
         $this->RegisterTimer('Watchdog', 15000, 'ALA2_Watchdog($_IPS["TARGET"]);');
 
         $this->RequireParent(self::CLIENT_SOCKET_GUID);
@@ -79,10 +88,10 @@ class AussenlichtAutomatik2 extends IPSModule
         // Auch bei einem Update einer bereits vorhandenen Instanz anlegen.
         $this->RegisterVariableBoolean('PersonDetected', 'Person erkannt', '~Switch', 10);
         $this->RegisterVariableBoolean('NightPermission', 'Nachtfreigabe', '~Switch', 20);
-        $this->syncStatusVariables();
 
         $this->SetTimerInterval('HandshakeTimer', 0);
         $this->SetTimerInterval('SocketRestartTimer', 0);
+        $this->SetTimerInterval('PersonStateTimer', 0);
         $this->SetTimerInterval('OffTimer', 0);
         $this->SetTimerInterval('SunBoundaryTimer', 0);
         $this->SetBuffer('HttpBuffer', '');
@@ -96,6 +105,19 @@ class AussenlichtAutomatik2 extends IPSModule
         $this->WriteAttributeString('DigestChallenge', '{}');
         $this->WriteAttributeInteger('DigestNC', 0);
 
+        // Ein Modulupdate/ApplyChanges trennt den Eventstream. Aktive Human-Zustände
+        // dürfen deshalb nicht aus einem alten Stream übernommen werden.
+        $wasPersonActive = $this->ReadAttributeBoolean('PersonActive');
+        $this->WriteAttributeString('ActiveHumanEvents', '{}');
+        $this->WriteAttributeInteger('HumanPulseUntil', 0);
+        $this->setPersonActive(false);
+        if ($wasPersonActive) {
+            $this->WriteAttributeBoolean('ManualLockUntilPersonClear', false);
+            if ($this->lightAutomationEnabled() && $this->ReadAttributeBoolean('AutoOwned')) {
+                $this->scheduleOff();
+            }
+        }
+
         // 0.1.0 verwendete noch "Ist es Tag". Diese Variable ist bewusst nicht mehr Teil der Logik.
         $legacyDayVar = $this->ReadPropertyInteger('DayVariableID');
         if ($this->isBooleanVariable($legacyDayVar)) {
@@ -106,20 +128,22 @@ class AussenlichtAutomatik2 extends IPSModule
             }
         }
 
+        $sunriseVar = 0;
+        $sunsetVar = 0;
+        $feedbackVar = 0;
         if ($this->lightAutomationEnabled()) {
-            $sunriseVar = $this->ReadPropertyInteger('SunriseVariableID');
-            $sunsetVar = $this->ReadPropertyInteger('SunsetVariableID');
-            if ($this->isIntegerVariable($sunriseVar)) {
-                $this->RegisterMessage($sunriseVar, self::VM_UPDATE_ID);
+            $candidate = $this->ReadPropertyInteger('SunriseVariableID');
+            if ($this->isIntegerVariable($candidate)) {
+                $sunriseVar = $candidate;
             }
-            if ($this->isIntegerVariable($sunsetVar)) {
-                $this->RegisterMessage($sunsetVar, self::VM_UPDATE_ID);
+            $candidate = $this->ReadPropertyInteger('SunsetVariableID');
+            if ($this->isIntegerVariable($candidate)) {
+                $sunsetVar = $candidate;
             }
-
-            $feedbackVar = $this->ReadPropertyInteger('LightFeedbackVariableID');
-            if ($this->isBooleanVariable($feedbackVar)) {
-                $this->RegisterMessage($feedbackVar, self::VM_UPDATE_ID);
-                $current = (bool) GetValue($feedbackVar);
+            $candidate = $this->ReadPropertyInteger('LightFeedbackVariableID');
+            if ($this->isNumericVariable($candidate)) {
+                $feedbackVar = $candidate;
+                $current = ((float) GetValue($feedbackVar)) > 0.0;
                 $last = $this->ReadAttributeInteger('LastLightFeedback');
                 if ($last !== -1 && $last !== (int) $current && $this->ReadAttributeBoolean('AutoOwned')) {
                     // Während Symcon/Modul inaktiv war, wurde der reale Lichtzustand verändert.
@@ -134,15 +158,14 @@ class AussenlichtAutomatik2 extends IPSModule
             $this->WriteAttributeBoolean('AutoOwned', false);
             $this->WriteAttributeBoolean('ManualLockUntilPersonClear', false);
             $this->WriteAttributeInteger('OffDue', 0);
-            $this->SetTimerInterval('OffTimer', 0);
-            $this->SetTimerInterval('SunBoundaryTimer', 0);
         }
 
-        $parentID = $this->getParentID();
-        if ($parentID > 0) {
-            $this->RegisterMessage($parentID, self::IM_CHANGESTATUS_ID);
-        }
+        $this->updateVariableSubscription('RegisteredSunriseID', $sunriseVar);
+        $this->updateVariableSubscription('RegisteredSunsetID', $sunsetVar);
+        $this->updateVariableSubscription('RegisteredFeedbackID', $feedbackVar);
+        $this->updateParentSubscription($this->getParentID());
 
+        $this->syncStatusVariables();
         $this->restoreOffTimer();
         $this->scheduleSunBoundaryTimer();
 
@@ -302,7 +325,11 @@ class AussenlichtAutomatik2 extends IPSModule
                     $this->SetTimerInterval('HandshakeTimer', 250);
                 }
             } elseif ($status !== 102) {
+                $wasStreaming = $this->ReadAttributeBoolean('Streaming');
                 $this->WriteAttributeBoolean('Streaming', false);
+                if ($wasStreaming) {
+                    $this->clearHumanTracking('Dahua-Stream getrennt');
+                }
             }
         }
     }
@@ -370,6 +397,16 @@ class AussenlichtAutomatik2 extends IPSModule
 
     public function Watchdog(): void
     {
+        // Sonnenstatus zusätzlich zyklisch prüfen. Damit bleibt die Freigabe auch dann
+        // korrekt, wenn ein Location-Control-Update oder ein Grenz-Timer verpasst wurde.
+        if ($this->lightAutomationEnabled()) {
+            $nightID = $this->GetIDForIdent('NightPermission');
+            $actualNight = $this->isNight();
+            if ($nightID > 0 && IPS_VariableExists($nightID) && GetValueBoolean($nightID) !== $actualNight) {
+                $this->handleSunStateChange('Watchdog');
+            }
+        }
+
         if (!$this->ReadPropertyBoolean('Enabled') || !$this->cameraConfigurationReady() || $this->ReadAttributeBoolean('AuthBlocked')) {
             return;
         }
@@ -382,6 +419,10 @@ class AussenlichtAutomatik2 extends IPSModule
         $instance = IPS_GetInstance($parentID);
         $now = time();
         if ((int) $instance['InstanceStatus'] !== 102) {
+            if ($this->ReadAttributeBoolean('Streaming')) {
+                $this->WriteAttributeBoolean('Streaming', false);
+                $this->clearHumanTracking('Client Socket nicht aktiv');
+            }
             if ($this->ReadAttributeInteger('SocketRestartStage') === 0
                 && ($now - $this->ReadAttributeInteger('LastSocketRestart')) >= 20) {
                 $this->debug('Watchdog', 'Client Socket nicht aktiv; kontrollierter Neuaufbau');
@@ -399,6 +440,7 @@ class AussenlichtAutomatik2 extends IPSModule
             // Eventstream schreiben. Stattdessen TCP sauber neu aufbauen.
             $this->debug('Watchdog', 'Kein Dahua-Heartbeat >25 s; Eventstream wird mit frischem Socket neu aufgebaut');
             $this->WriteAttributeBoolean('Streaming', false);
+            $this->clearHumanTracking('Dahua-Heartbeat verloren');
             $this->WriteAttributeBoolean('AuthPending', false);
             $this->WriteAttributeBoolean('LastRequestAuthenticated', false);
             $this->WriteAttributeInteger('DigestNC', 0);
@@ -417,7 +459,11 @@ class AussenlichtAutomatik2 extends IPSModule
 
     public function Reconnect(): void
     {
+        $wasStreaming = $this->ReadAttributeBoolean('Streaming');
         $this->WriteAttributeBoolean('Streaming', false);
+        if ($wasStreaming || $this->ReadAttributeBoolean('PersonActive')) {
+            $this->clearHumanTracking('Manueller Neuaufbau');
+        }
         $this->WriteAttributeBoolean('AuthPending', false);
         $this->WriteAttributeBoolean('AuthBlocked', false);
         $this->WriteAttributeBoolean('LastRequestAuthenticated', false);
@@ -441,13 +487,22 @@ class AussenlichtAutomatik2 extends IPSModule
             'PersonActive' => $this->ReadAttributeBoolean('PersonActive'),
             'AutoOwned' => $this->ReadAttributeBoolean('AutoOwned'),
             'ManualLockUntilPersonClear' => $this->ReadAttributeBoolean('ManualLockUntilPersonClear'),
+            'LightCommandVariableID' => $this->ReadPropertyInteger('LightCommandVariableID'),
+            'LightFeedbackVariableID' => $this->ReadPropertyInteger('LightFeedbackVariableID'),
+            'LightFeedbackRaw' => $this->getLightFeedbackRaw(),
             'LightFeedback' => $this->getLightFeedback(),
             'OffDue' => $this->ReadAttributeInteger('OffDue'),
             'Streaming' => $this->ReadAttributeBoolean('Streaming'),
             'AuthPending' => $this->ReadAttributeBoolean('AuthPending'),
             'AuthBlocked' => $this->ReadAttributeBoolean('AuthBlocked'),
             'SocketRestartStage' => $this->ReadAttributeInteger('SocketRestartStage'),
-            'LastCameraRx' => $this->ReadAttributeInteger('LastCameraRx')
+            'LastCameraRx' => $this->ReadAttributeInteger('LastCameraRx'),
+            'LastCameraRxAge' => $this->ReadAttributeInteger('LastCameraRx') > 0 ? max(0, time() - $this->ReadAttributeInteger('LastCameraRx')) : null,
+            'ActiveHumanEvents' => $this->getActiveHumanEvents(),
+            'HumanPulseUntil' => $this->ReadAttributeInteger('HumanPulseUntil'),
+            'LastHumanEvent' => $this->ReadAttributeString('LastHumanEvent'),
+            'ParentID' => $this->getParentID(),
+            'ParentStatus' => ($this->getParentID() > 0 && IPS_InstanceExists($this->getParentID())) ? (int) IPS_GetInstance($this->getParentID())['InstanceStatus'] : null
         ];
         $this->SendDebug('State', json_encode($state, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), 0);
     }
@@ -514,7 +569,7 @@ class AussenlichtAutomatik2 extends IPSModule
         $headers = [
             'GET ' . $uri . ' HTTP/1.1',
             'Host: ' . $hostHeader,
-            'User-Agent: IP-Symcon-AussenlichtAutomatik2/0.2.0',
+            'User-Agent: IP-Symcon-AussenlichtAutomatik2/0.3.0',
             'Accept: multipart/x-mixed-replace, */*',
             'Connection: keep-alive'
         ];
@@ -591,32 +646,108 @@ class AussenlichtAutomatik2 extends IPSModule
         $this->SetBuffer('EventCarry', $carry);
 
         foreach ($events as $event) {
+            $action = strtolower(trim((string) $event['action']));
+            $classification = $event['classification'] ?? null;
+
             if ($this->ReadPropertyBoolean('DebugEvents')) {
-                $this->SendDebug('DahuaEvent', $event['raw'], 0);
+                $summary = [
+                    'code' => $event['code'],
+                    'action' => $event['action'],
+                    'index' => $event['index'],
+                    'human' => $event['human'],
+                    'classification' => $classification,
+                    'eventId' => $event['eventId'],
+                    'ruleId' => $event['ruleId'],
+                    'groupId' => $event['groupId'],
+                    'objectId' => $event['objectId']
+                ];
+                $this->SendDebug('DahuaEvent', json_encode($summary, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . ' | ' . $this->singleLine($event['raw']), 0);
             }
-            if (!$event['human']) {
+
+            if (in_array($action, ['start', 'on'], true)) {
+                if (!$event['human']) {
+                    continue;
+                }
+                $active = DahuaHumanTracker::apply($this->getActiveHumanEvents(), $event, time());
+                $this->setActiveHumanEvents($active);
+                $this->rememberHumanEvent($event);
+                $this->refreshPersonAggregate('START ' . $event['code']);
                 continue;
             }
 
-            $action = strtolower($event['action']);
-            if ($action === 'start' || $action === 'on') {
-                $this->handlePersonStart($event['code']);
-            } elseif ($action === 'stop' || $action === 'off') {
-                $this->handlePersonStop($event['code']);
-            } elseif ($action === 'pulse') {
-                $this->handlePersonPulse($event['code']);
+            if (in_array($action, ['stop', 'off'], true)) {
+                // Ein explizit als Vehicle/Animal/etc. klassifizierter STOP darf keinen
+                // parallelen Human-Zustand derselben IVS-Regel löschen. Fehlt die
+                // Klassifizierung vollständig, darf der Tracker dagegen einen zuvor
+                // bekannten Human-START anhand Code/Index/IDs beenden.
+                if ($classification !== null && !$event['human']) {
+                    continue;
+                }
+                $before = $this->getActiveHumanEvents();
+                $after = DahuaHumanTracker::apply($before, $event, time());
+                if ($after !== $before) {
+                    $this->setActiveHumanEvents($after);
+                    $this->rememberHumanEvent($event);
+                    $this->refreshPersonAggregate('STOP ' . $event['code']);
+                }
+                continue;
+            }
+
+            if ($action === 'pulse' && $event['human']) {
+                $until = max($this->ReadAttributeInteger('HumanPulseUntil'), time() + 5);
+                $this->WriteAttributeInteger('HumanPulseUntil', $until);
+                $this->SetTimerInterval('PersonStateTimer', max(1000, ($until - time()) * 1000));
+                $this->rememberHumanEvent($event);
+                $this->refreshPersonAggregate('PULSE ' . $event['code']);
             }
         }
     }
 
-    private function handlePersonStart(string $source): void
+    public function PersonStateTimer(): void
     {
-        $this->setPersonActive(true);
-        $this->WriteAttributeInteger('OffDue', 0);
-        $this->SetTimerInterval('OffTimer', 0);
-        $this->debug('Person', 'START via ' . $source);
+        $until = $this->ReadAttributeInteger('HumanPulseUntil');
+        if ($until > time()) {
+            $this->SetTimerInterval('PersonStateTimer', max(1000, ($until - time()) * 1000));
+            return;
+        }
 
-        if (!$this->ReadPropertyBoolean('Enabled')) {
+        $this->SetTimerInterval('PersonStateTimer', 0);
+        if ($until > 0) {
+            $this->WriteAttributeInteger('HumanPulseUntil', 0);
+            $this->refreshPersonAggregate('PULSE abgelaufen');
+        }
+    }
+
+    private function refreshPersonAggregate(string $source): void
+    {
+        $active = $this->getActiveHumanEvents();
+        $pulseActive = $this->ReadAttributeInteger('HumanPulseUntil') > time();
+        $newState = $active !== [] || $pulseActive;
+        $oldState = $this->ReadAttributeBoolean('PersonActive');
+        $this->setPersonActive($newState);
+
+        if ($oldState === $newState) {
+            return;
+        }
+
+        if ($newState) {
+            $this->WriteAttributeInteger('OffDue', 0);
+            $this->SetTimerInterval('OffTimer', 0);
+            $this->debug('Person', 'AKTIV via ' . $source . ' | aktive Human-Events: ' . count($active));
+            $this->attemptAutomaticOn($source);
+            return;
+        }
+
+        $this->WriteAttributeBoolean('ManualLockUntilPersonClear', false);
+        $this->debug('Person', 'INAKTIV via ' . $source);
+        if ($this->lightAutomationEnabled() && $this->ReadAttributeBoolean('AutoOwned')) {
+            $this->scheduleOff();
+        }
+    }
+
+    private function attemptAutomaticOn(string $source): void
+    {
+        if (!$this->ReadPropertyBoolean('Enabled') || !$this->ReadAttributeBoolean('PersonActive')) {
             return;
         }
         if (!$this->lightAutomationEnabled()) {
@@ -633,7 +764,7 @@ class AussenlichtAutomatik2 extends IPSModule
 
         $light = $this->getLightFeedback();
         if ($light === null) {
-            $this->debug('Licht', 'EIN verworfen: echte LCN-Rückmeldung nicht verfügbar');
+            $this->debug('Licht', 'EIN verworfen: echte LCN-Intensity-Rückmeldung nicht verfügbar');
             return;
         }
         if ($light === true) {
@@ -646,30 +777,63 @@ class AussenlichtAutomatik2 extends IPSModule
 
         if ($this->switchLight(true)) {
             $this->WriteAttributeBoolean('AutoOwned', true);
-            $this->debug('Licht', 'Automatik EIN');
+            $this->debug('Licht', 'Automatik EIN via ' . $source);
         }
     }
 
-    private function handlePersonStop(string $source): void
+    private function clearHumanTracking(string $source): void
     {
-        $this->setPersonActive(false);
-        $this->WriteAttributeBoolean('ManualLockUntilPersonClear', false);
-        $this->debug('Person', 'STOP via ' . $source);
+        $hadState = $this->ReadAttributeBoolean('PersonActive')
+            || $this->getActiveHumanEvents() !== []
+            || $this->ReadAttributeInteger('HumanPulseUntil') > 0;
 
+        $this->WriteAttributeString('ActiveHumanEvents', '{}');
+        $this->WriteAttributeInteger('HumanPulseUntil', 0);
+        $this->SetTimerInterval('PersonStateTimer', 0);
+        $this->setPersonActive(false);
+
+        if (!$hadState) {
+            return;
+        }
+
+        $this->WriteAttributeBoolean('ManualLockUntilPersonClear', false);
+        $this->debug('Person', 'INAKTIV via ' . $source . ' (Streamzustand verworfen)');
         if ($this->lightAutomationEnabled() && $this->ReadAttributeBoolean('AutoOwned')) {
             $this->scheduleOff();
         }
     }
 
-    private function handlePersonPulse(string $source): void
+    /** @return array<string,array<string,mixed>> */
+    private function getActiveHumanEvents(): array
     {
-        $this->debug('Person', 'PULSE via ' . $source);
-        $this->handlePersonStart($source);
-        $this->setPersonActive(false);
-        $this->WriteAttributeBoolean('ManualLockUntilPersonClear', false);
-        if ($this->lightAutomationEnabled() && $this->ReadAttributeBoolean('AutoOwned')) {
-            $this->scheduleOff();
-        }
+        $decoded = json_decode($this->ReadAttributeString('ActiveHumanEvents'), true);
+        return is_array($decoded) ? $decoded : [];
+    }
+
+    /** @param array<string,array<string,mixed>> $events */
+    private function setActiveHumanEvents(array $events): void
+    {
+        $encoded = json_encode($events, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        $this->WriteAttributeString('ActiveHumanEvents', $encoded === false ? '{}' : $encoded);
+    }
+
+    /** @param array<string,mixed> $event */
+    private function rememberHumanEvent(array $event): void
+    {
+        $value = [
+            'time' => time(),
+            'code' => $event['code'] ?? '',
+            'action' => $event['action'] ?? '',
+            'index' => $event['index'] ?? 0,
+            'human' => $event['human'] ?? false,
+            'classification' => $event['classification'] ?? null,
+            'eventId' => $event['eventId'] ?? null,
+            'ruleId' => $event['ruleId'] ?? null,
+            'groupId' => $event['groupId'] ?? null,
+            'objectId' => $event['objectId'] ?? null
+        ];
+        $encoded = json_encode($value, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        $this->WriteAttributeString('LastHumanEvent', $encoded === false ? '' : $encoded);
     }
 
     private function scheduleOff(): void
@@ -710,9 +874,20 @@ class AussenlichtAutomatik2 extends IPSModule
             return;
         }
 
+        $light = $this->getLightFeedback();
+        if ($light === false) {
+            $this->WriteAttributeBoolean('AutoOwned', false);
+            $this->WriteAttributeInteger('OffDue', 0);
+            return;
+        }
+
         $due = $this->ReadAttributeInteger('OffDue');
         if ($due <= 0) {
-            return;
+            // Sicherheitsnetz nach Neustart/Update: Automatik-Eigentum darf nie ohne
+            // Ausschaltzeitpunkt bestehen, wenn keine Person mehr aktiv ist.
+            $seconds = max(10, $this->ReadPropertyInteger('AfterRunSeconds'));
+            $due = time() + $seconds;
+            $this->WriteAttributeInteger('OffDue', $due);
         }
 
         $remaining = max(1, $due - time());
@@ -745,7 +920,7 @@ class AussenlichtAutomatik2 extends IPSModule
             // Wird eine Person bereits vor Sonnenuntergang erkannt und bleibt aktiv,
             // darf das Licht exakt ab Sonnenuntergang eingeschaltet werden.
             if ($this->ReadAttributeBoolean('PersonActive')) {
-                $this->handlePersonStart('Sonnenuntergang');
+                $this->attemptAutomaticOn('Sonnenuntergang');
             }
             return;
         }
@@ -848,6 +1023,10 @@ class AussenlichtAutomatik2 extends IPSModule
             $this->debug('Licht', 'Schaltvariable ungültig: #' . $commandVar);
             return false;
         }
+        if (!HasAction($commandVar)) {
+            $this->debug('Licht', 'Schaltvariable hat keine Aktion: #' . $commandVar);
+            return false;
+        }
 
         $feedback = $this->getLightFeedback();
         if ($feedback !== null && $feedback === $on) {
@@ -940,10 +1119,27 @@ class AussenlichtAutomatik2 extends IPSModule
         }
 
         $varID = $this->ReadPropertyInteger('LightFeedbackVariableID');
-        if (!$this->isBooleanVariable($varID)) {
+        if (!$this->isNumericVariable($varID)) {
             return null;
         }
-        return (bool) GetValue($varID);
+
+        // Die echte Ausgangsrückmeldung ist die native LCN-Intensität.
+        // 0 bedeutet AUS, jeder Wert > 0 bedeutet EIN. Unterstützt werden
+        // Integer und Float, damit unterschiedliche LCN-/Symcon-Instanzen
+        // ohne Sonderfall verwendet werden können.
+        return ((float) GetValue($varID)) > 0.0;
+    }
+
+    private function getLightFeedbackRaw(): int|float|null
+    {
+        $varID = $this->ReadPropertyInteger('LightFeedbackVariableID');
+        if (!$this->isNumericVariable($varID)) {
+            return null;
+        }
+
+        $variable = IPS_GetVariable($varID);
+        $value = GetValue($varID);
+        return ((int) $variable['VariableType'] === 1) ? (int) $value : (float) $value;
     }
 
     private function isBooleanVariable(int $id): bool
@@ -962,6 +1158,65 @@ class AussenlichtAutomatik2 extends IPSModule
         }
         $variable = IPS_GetVariable($id);
         return isset($variable['VariableType']) && (int) $variable['VariableType'] === 1;
+    }
+
+    private function isNumericVariable(int $id): bool
+    {
+        if ($id <= 0 || !IPS_VariableExists($id)) {
+            return false;
+        }
+        $variable = IPS_GetVariable($id);
+        if (!isset($variable['VariableType'])) {
+            return false;
+        }
+        $type = (int) $variable['VariableType'];
+        return $type === 1 || $type === 2;
+    }
+
+    private function updateVariableSubscription(string $attribute, int $newID): void
+    {
+        $oldID = $this->ReadAttributeInteger($attribute);
+        if ($oldID > 0 && $oldID !== $newID) {
+            try {
+                $this->UnregisterMessage($oldID, self::VM_UPDATE_ID);
+            } catch (Throwable $e) {
+                // Alte Variable kann inzwischen gelöscht worden sein.
+            }
+        }
+
+        if ($newID > 0) {
+            try {
+                $this->RegisterMessage($newID, self::VM_UPDATE_ID);
+            } catch (Throwable $e) {
+                $this->debug('Subscription', 'Variable #' . $newID . ' konnte nicht registriert werden: ' . $e->getMessage());
+                $newID = 0;
+            }
+        }
+        $this->WriteAttributeInteger($attribute, $newID);
+    }
+
+    private function updateParentSubscription(int $newID): void
+    {
+        $oldID = $this->ReadAttributeInteger('RegisteredParentID');
+        if ($oldID > 0 && $oldID !== $newID) {
+            try {
+                $this->UnregisterMessage($oldID, self::IM_CHANGESTATUS_ID);
+            } catch (Throwable $e) {
+                // Alte Parent-Instanz kann inzwischen entfernt worden sein.
+            }
+        }
+
+        if ($newID > 0 && IPS_InstanceExists($newID)) {
+            try {
+                $this->RegisterMessage($newID, self::IM_CHANGESTATUS_ID);
+            } catch (Throwable $e) {
+                $this->debug('Subscription', 'Parent #' . $newID . ' konnte nicht registriert werden: ' . $e->getMessage());
+                $newID = 0;
+            }
+        } else {
+            $newID = 0;
+        }
+        $this->WriteAttributeInteger('RegisteredParentID', $newID);
     }
 
     private function cameraConfigurationReady(): bool

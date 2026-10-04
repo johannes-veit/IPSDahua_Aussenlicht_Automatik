@@ -1,116 +1,238 @@
 # Dahua Personenerkennung / Außenlicht-Automatik für IP-Symcon 9
 
-Version **0.2.0**.
+Version **0.3.0**.
 
-## Konzept
+## Zweck
 
-Das Modul ist ab 0.2.0 nicht mehr auf die Terrasse festgelegt. Für **jede Dahua-Kamera wird eine eigene Instanz** angelegt. Jede Instanz kann in zwei Betriebsarten verwendet werden:
+Für **jede Dahua-Kamera wird eine eigene Instanz** angelegt. Eine Instanz kann wahlweise:
 
-1. **Nur Personenerkennung**
-   - direkter Dahua-Eventstream per HTTP/Digest
-   - `codes=[All]`
-   - sichtbare Boolean-Variable **Person erkannt**
-   - keine Sonnenzeiten erforderlich
-   - keine Lichtvariablen erforderlich
-   - garantiert keine Lichtbefehle
+1. nur eine zuverlässige Boolean-Variable **Person erkannt** bereitstellen oder
+2. zusätzlich ein Licht mit astronomischer Nachtfreigabe steuern.
 
-2. **Personenerkennung + Lichtautomatik**
-   - zusätzlich Location-Control-Variablen **Sonnenaufgang** und **Sonnenuntergang**
-   - zusätzliche Licht-Schaltvariable mit Aktion, z. B. `LCNLight → Status`
-   - separate echte Boolean-Rückmeldung des Lichtzustands
-   - sichtbare Boolean-Variable **Nachtfreigabe**
-   - Schaltlogik: **Person erkannt UND Nachtfreigabe = Licht EIN**
+Der Dahua-Parser ist nicht auf ein einzelnes Kameramodell festgelegt. Er verarbeitet insbesondere die im Projekt vorhandenen Familien:
 
-Die Betriebsart wird über **„Personenerkennung zusätzlich für Lichtautomatik verwenden“** gewählt.
+- Dahua TiOC, z. B. `DH-IPC-PDW3849-A180-AS-PV`
+- Dahua WizMind `IPC-HFW5442E-ZE`
 
-## Pro Kamera eine Instanz
+Die Kamera selbst muss die entsprechende SMD-/IVS-Personenerkennung aktiviert haben.
 
-Beispiele:
+## Dahua-Verbindung
 
-- `Dahua Personenerkennung – JV Terrasse`
-- `Dahua Personenerkennung – JV Hof Garage`
-- `Dahua Personenerkennung – Lagerplatz rechts`
+Pro Instanz werden eingetragen:
 
-Die Instanz selbst kann im Objektbaum entsprechend der Kamera benannt werden. IP-Adresse, Port, Benutzername und Passwort werden je Instanz separat eingetragen.
+- Kamera-IP / Host
+- HTTP-Port, normalerweise `80`
+- Benutzername
+- Passwort
 
-## Dahua-Personenerkennung
+Jede Modulinstanz erzeugt bei Bedarf einen eigenen Client Socket. Dadurch können mehrere Kameras mit unterschiedlichen IP-Adressen parallel betrieben werden, ohne sich eine Socket-Konfiguration zu teilen.
 
-Das Modul verbindet sich mit:
+Der Eventstream wird direkt von der Kamera geöffnet:
 
 `/cgi-bin/eventManager.cgi?action=attach&codes=[All]&heartbeat=5`
 
-Als Person gelten:
+Der Digest-Handshake berücksichtigt das Dahua-Verhalten, dass nach der ersten `401`-Challenge die TCP-Verbindung geschlossen werden kann. Der authentifizierte Request wird deshalb über eine frische Verbindung gesendet.
+
+Unterstützte Digest-Algorithmen:
+
+- MD5
+- MD5-sess
+- SHA-256
+- SHA-256-sess
+
+Nach wiederholt abgewiesenem Login stoppt das Modul weitere Versuche, damit ein falsches Passwort nicht unnötig oft versucht wird. Nach Korrektur genügt **Dahua-Verbindung neu anstoßen** oder Speichern/Übernehmen.
+
+## Universelle Personenerkennung
+
+Version 0.3.0 verarbeitet sowohl direkte SMD-Ereignisse als auch IVS-Ereignisse.
+
+Direkt erkannt werden u. a.:
 
 - `SmartMotionHuman`
-- Dahua-IVS-Ereignisse, deren Nutzdaten ein Objekt vom Typ `Human` enthalten
+- `HumanDetection`
+- `HumanBodyDetection`
 
-Normale Bewegung `VideoMotion` wird **nicht** als Person interpretiert.
+Bei IVS-Ereignissen wird die Objektklassifizierung ausgewertet, z. B.:
 
-Der Digest-Handshake berücksichtigt das Dahua-Verhalten, nach der ersten `401`-Challenge die TCP-Verbindung zu schließen. Der authentifizierte Eventstream wird deshalb über eine frische TCP-Verbindung aufgebaut.
+- `CrossLineDetection` + `ObjectType: Human`
+- `CrossRegionDetection` + `ObjectType: Human`
+- Human-/Person-/Pedestrian-Klassifizierung innerhalb verschachtelter `Object`- oder `Objects[]`-Daten
+
+### Mehrzeilige IVS-Daten
+
+Dahua kann `data={...}` über mehrere Zeilen und mehrere TCP-Chunks verteilen. Der Parser sammelt das Ereignis bis zum vollständigen JSON-Ende und wertet es erst dann aus. Multipart-Boundaries, Heartbeats und beliebige TCP-Chunk-Grenzen werden dabei toleriert.
+
+### START/STOP sicher nachführen
+
+Ein IVS-`START` kann die Human-Klassifizierung enthalten, während der zugehörige `STOP` je nach Firmware nur noch Code, Index oder IDs liefert. Deshalb führt das Modul aktive Human-Ereignisse intern mit:
+
+- Eventcode
+- Index
+- EventID, soweit vorhanden
+- RuleID, soweit vorhanden
+- GroupID, soweit vorhanden
+- ObjectID, soweit vorhanden
+
+Ein passender `STOP` beendet dadurch ein zuvor erkanntes Human-Ereignis auch dann, wenn im STOP selbst kein `ObjectType=Human` mehr enthalten ist.
+
+Explizit als `Vehicle`, `Animal` usw. klassifizierte STOP-Ereignisse löschen keinen parallelen Human-Zustand.
+
+### Mehrere parallele Regeln
+
+Mehrere Human-IVS-Ereignisse können gleichzeitig aktiv sein. **Person erkannt** bleibt TRUE, solange mindestens ein Human-Ereignis aktiv ist.
+
+### PULSE
+
+Human-`PULSE` wird fünf Sekunden gehalten. Dadurch ist die Boolean-Variable sichtbar und eine optionale Lichtautomatik kann sicher reagieren, auch wenn kein separates STOP folgt.
+
+### Streamverlust
+
+Bei verlorenem Eventstream werden aktive Human-Zustände verworfen. So kann `Person erkannt` durch einen verpassten STOP nicht dauerhaft TRUE hängen. Hat die Automatik das Licht selbst eingeschaltet, beginnt in diesem Fall der normale Nachlauf.
 
 ## Sichtbare Statusvariablen
 
 ### Person erkannt
 
-Immer sichtbar. `TRUE`, solange der Dahua-Eventstream eine aktive Personenerkennung meldet.
+Immer sichtbar und nur lesbar.
+
+- FALSE = aktuell kein aktives Human-Ereignis
+- TRUE = mindestens ein aktives Human-Ereignis bzw. Human-PULSE aktiv
 
 ### Nachtfreigabe
 
-Nur bei aktivierter Lichtautomatik sichtbar. `TRUE`, wenn der aktuelle Zeitpunkt astronomisch nach Sonnenuntergang bzw. vor Sonnenaufgang liegt.
+Nur für die Lichtautomatik relevant und bei reiner Personenerkennung ausgeblendet.
 
-Es wird **keine Helligkeits-/Dunkelheitsvariable** ausgewertet. Andere Lampen können die Freigabe deshalb nicht verfälschen.
+- TRUE = nach Sonnenuntergang bzw. vor Sonnenaufgang
+- FALSE = Tag
 
-## Optionale Lichtautomatik
+Es wird **keine Helligkeits-/Dunkelheitsvariable** verwendet.
 
-Ist **„Personenerkennung zusätzlich für Lichtautomatik verwenden“** ausgeschaltet, wird ausschließlich die Personenvariable gepflegt. Sonnenzeiten, Licht-Schaltvariable, Rückmeldung und Nachlauf werden vollständig ignoriert.
+## Betriebsart: nur Personenerkennung
 
-Ist die Option eingeschaltet, werden benötigt:
+Option **Personenerkennung zusätzlich für Lichtautomatik verwenden = AUS**.
 
-- `Location Control → Sonnenaufgang`
-- `Location Control → Sonnenuntergang`
-- Boolean-Schaltvariable mit Standardaktion, z. B. `LCNLight → Status`
-- separate echte Boolean-Rückmeldung des Lichtzustands
-- Nachlaufzeit, standardmäßig 180 Sekunden
+Dann werden keine Sonnen- oder Lichtvariablen benötigt und das Modul sendet garantiert keinen Lichtbefehl.
 
-### Schaltregel
+## Betriebsart: Personenerkennung + Lichtautomatik
 
-**Person erkannt UND Nachtfreigabe → Licht EIN**
+Zusätzlich auswählen:
 
-Nach Ende der Personenerkennung startet der Nachlauf. Eine neue Erkennung während des Nachlaufs verwirft den laufenden Ausschalt-Timer.
+### Location Control
 
-### Vorrang manueller Bedienung
+- **Sonnenaufgang**
+- **Sonnenuntergang**
 
-- Ist das Licht vor der Erkennung bereits EIN, übernimmt die Automatik kein Eigentum und schaltet es später nicht AUS.
-- Nur ein nachweislich von der Automatik eingeschaltetes Licht darf automatisch ausgeschaltet werden.
-- Eine externe/manuelle Änderung der echten Rückmeldung verwirft das Automatik-Eigentum.
-- Wird während einer laufenden Personenerkennung manuell ausgeschaltet, schaltet die Automatik bis zum Ende dieser Erkennung nicht sofort wieder ein.
-- Sonnenaufgang beendet die Nachtfreigabe; nur automatik-eigenes Licht wird ausgeschaltet.
+Schaltfreigabe:
 
-## Bestehende Terrasse nach Update von 0.1.3
+**Person erkannt UND Nachtfreigabe = Licht darf EIN**
 
-Die bestehende Terrasseninstanz bleibt kompatibel. Die neue Eigenschaft **Lichtautomatik verwenden** ist aus Kompatibilitätsgründen standardmäßig aktiviert.
+### Licht schalten – Status
 
-Für die bisherige Terrasse bleiben die vorhandenen Zuordnungen bestehen. Nach dem Update einmal die Instanz öffnen und **Übernehmen**.
+Hier wird eine **Boolean-Variable mit Aktion** ausgewählt.
 
-Bei **neu angelegten Kamera-Instanzen**:
+Geeignet sind z. B.:
 
-- für reine Personenerkennung die Lichtautomatik deaktivieren,
-- Kamera-IP/Benutzer/Passwort eintragen,
-- Übernehmen.
+- `LCNLight → Status`
+- direkt die schaltbare Boolean-Statusvariable eines nativen LCN-Ausgangs
 
-Für eine neue Kamera mit Lichtsteuerung zusätzlich die Sonnen- und Lichtvariablen auswählen.
+Das Modul schaltet ausschließlich über:
 
-## Sicherheit bei ApplyChanges / Update
+`RequestAction(<Statusvariable>, true/false)`
 
-`ApplyChanges()` sendet **keinen Lichtbefehl**. Wird die Lichtautomatik deaktiviert, werden Lichttimer und internes Automatik-Eigentum verworfen, ohne einen AUS- oder EIN-Befehl zu senden.
+Es schreibt nicht direkt in die Variable.
 
-## Projektbeispiel Terrasse
+### Echte Rückmeldung – Intensität
 
-Die bisherige Terrasseninstanz kann weiterhin verwendet werden mit:
+Hier wird die echte native Ausgangsrückmeldung ausgewählt:
 
-- Dahua JV Terrasse `192.168.107.110`
-- vorhandener LCNLight-Statusvariable für EG Terrasse als Schaltvariable
-- echter nativer LCN-Rückmeldung für Ausgang 1
-- 180 s Nachlauf
+- Integer oder Float
+- `0 = AUS`
+- jeder Wert `> 0 = EIN`
 
-Die festen IDs sind ab 0.2.0 jedoch **keine Modulvorgabe mehr**. Neue Instanzen starten ohne fest hinterlegte Licht-IDs oder Kamera-IP.
+Typischerweise ist dies die native LCN-Variable **Intensity / Intensität** des tatsächlichen Ausgangs. Diese Variable wird ausschließlich gelesen und niemals beschrieben.
+
+Damit sind Befehl und Istzustand bewusst getrennt:
+
+- **Boolean Status mit Aktion → Schaltbefehl**
+- **Integer/Float Intensität → realer Istzustand**
+
+## Manueller Vorrang
+
+- Licht war vor der Personenerkennung bereits EIN → kein Automatik-Eigentum; später kein automatisches AUS.
+- Nur Licht, das die Automatik selbst eingeschaltet hat, darf sie wieder ausschalten.
+- Eine externe/GT8-Änderung der echten Intensitätsrückmeldung verwirft das Automatik-Eigentum.
+- Wird während laufender Personenerkennung manuell AUS geschaltet, bleibt die Automatik bis zum vollständigen Ende aller aktuellen Human-Ereignisse gesperrt.
+- Eine neue Person während des Nachlaufs stoppt den Ausschalt-Timer wieder.
+- Sonnenaufgang entzieht die Freigabe; nur automatik-eigenes Licht wird ausgeschaltet.
+- `ApplyChanges()` sendet keinen Lichtbefehl.
+
+## Nachlauf
+
+Standard: **180 Sekunden** nach vollständigem Ende der Personenerkennung.
+
+Sind mehrere Human-Ereignisse gleichzeitig aktiv, beginnt der Nachlauf erst, wenn alle beendet sind.
+
+## Selbstüberwachung
+
+- Dahua-Heartbeat wird überwacht.
+- Bei Streamverlust wird kontrolliert mit frischem Socket verbunden.
+- Nachtfreigabe wird zusätzlich zyklisch geprüft.
+- Personenstatus wird bei Streamverlust sicher zurückgesetzt.
+- Automatik-Eigentum kann nach Neustart/Update nicht ohne Ausschaltzeitpunkt hängen bleiben.
+- geänderte Sonnen-/Rückmeldevariablen werden sauber neu auf Symcon-Messages registriert.
+
+## Diagnose
+
+**Alle Dahua-Ereignisse im Debug ausgeben** zeigt für jedes geparste Event u. a.:
+
+- Code
+- Action
+- Index
+- Human ja/nein
+- erkannte Klassifizierung
+- EventID
+- RuleID
+- GroupID
+- ObjectID
+
+**Aktuellen Zustand ins Debug schreiben** zeigt zusätzlich:
+
+- Client-Socket-ID und Status
+- Streaming-/Authentifizierungszustand
+- Alter des letzten Kamerapakets
+- aktive Human-Ereignisse
+- letzter Human-Event
+- Person erkannt
+- Nachtfreigabe
+- Licht-Istzustand
+- Automatik-Eigentum
+- Nachlaufzeitpunkt
+
+## Update
+
+GUIDs, Modul-ID und Prefix bleiben unverändert. Vorhandene Instanzen werden weiterverwendet.
+
+Nach dem GitHub-Update:
+
+1. Modul in IP-Symcon aktualisieren.
+2. vorhandene Instanz öffnen.
+3. **Übernehmen**.
+4. Client Socket prüfen: nach dem Digest-Aufbau muss er dauerhaft aktiv bleiben.
+5. Bei einer neuen Kamerafamilie zunächst **Alle Dahua-Ereignisse im Debug ausgeben** aktivieren und einen realen Personentest durchführen.
+
+## Tests
+
+Enthaltene Regressionstests prüfen u. a.:
+
+- einzeiliges `SmartMotionHuman`
+- mehrzeilige IVS-JSON-Daten über mehrere Chunks
+- Human in `Objects[]`
+- Vehicle darf nicht als Human gelten
+- START/STOP mit und ohne Event-/Rule-IDs
+- parallele Human-Ereignisse
+- MD5- und SHA-256-Digest
+- Nachtfenster
+- sichtbare Statusvariablen
+- reine Personenerkennung
+- Boolean-Schaltvariable mit Aktion
+- Integer/Float-Intensity als echte Rückmeldung
