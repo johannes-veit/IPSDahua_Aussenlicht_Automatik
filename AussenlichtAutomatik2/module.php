@@ -13,6 +13,8 @@ class AussenlichtAutomatik2 extends IPSModule
     private const SOCKET_TX_GUID = '{79827379-F36E-4ADA-8A95-5F8D1DC92FA9}';
     private const VM_UPDATE_ID = 10603;
     private const IM_CHANGESTATUS_ID = 10505;
+    private const LIGHT_CONFIRM_SECONDS = 60;
+    private const LIGHT_RECHECK_SECONDS = 15;
 
     public function Create(): void
     {
@@ -65,6 +67,7 @@ class AussenlichtAutomatik2 extends IPSModule
         $this->RegisterAttributeInteger('RegisteredSunriseID', 0);
         $this->RegisterAttributeInteger('RegisteredSunsetID', 0);
         $this->RegisterAttributeInteger('RegisteredFeedbackID', 0);
+        $this->RegisterAttributeInteger('RegisteredCommandID', 0);
         $this->RegisterAttributeInteger('RegisteredParentID', 0);
 
         // Sichtbare, read-only Diagnosevariablen. Keine Aktion freigeben.
@@ -104,6 +107,7 @@ class AussenlichtAutomatik2 extends IPSModule
         $this->WriteAttributeInteger('SocketRestartStage', 0);
         $this->WriteAttributeString('DigestChallenge', '{}');
         $this->WriteAttributeInteger('DigestNC', 0);
+        $this->clearSelfCommand();
 
         // Ein Modulupdate/ApplyChanges trennt den Eventstream. Aktive Human-Zustände
         // dürfen deshalb nicht aus einem alten Stream übernommen werden.
@@ -131,6 +135,7 @@ class AussenlichtAutomatik2 extends IPSModule
         $sunriseVar = 0;
         $sunsetVar = 0;
         $feedbackVar = 0;
+        $commandVar = 0;
         if ($this->lightAutomationEnabled()) {
             $candidate = $this->ReadPropertyInteger('SunriseVariableID');
             if ($this->isIntegerVariable($candidate)) {
@@ -140,9 +145,31 @@ class AussenlichtAutomatik2 extends IPSModule
             if ($this->isIntegerVariable($candidate)) {
                 $sunsetVar = $candidate;
             }
+            $candidate = $this->ReadPropertyInteger('LightCommandVariableID');
+            if ($this->isBooleanVariable($candidate) && HasAction($candidate)) {
+                $commandVar = $candidate;
+            }
             $candidate = $this->ReadPropertyInteger('LightFeedbackVariableID');
             if ($this->isNumericVariable($candidate)) {
                 $feedbackVar = $candidate;
+            }
+
+            // Wird auf eine andere Lampe / andere Rückmeldung umkonfiguriert, darf
+            // Eigentum der alten Lampe niemals auf die neue Auswahl übertragen werden.
+            $oldCommand = $this->ReadAttributeInteger('RegisteredCommandID');
+            $oldFeedback = $this->ReadAttributeInteger('RegisteredFeedbackID');
+            $ioChanged = ($oldCommand > 0 && $oldCommand !== $commandVar)
+                || ($oldFeedback > 0 && $oldFeedback !== $feedbackVar);
+            if ($ioChanged) {
+                $this->WriteAttributeBoolean('AutoOwned', false);
+                $this->WriteAttributeBoolean('ManualLockUntilPersonClear', false);
+                $this->WriteAttributeInteger('OffDue', 0);
+                $this->SetTimerInterval('OffTimer', 0);
+                $this->clearSelfCommand();
+                $this->debug('Licht', 'Licht-I/O geändert; altes Automatik-Eigentum sicher verworfen');
+            }
+
+            if ($feedbackVar > 0) {
                 $current = ((float) GetValue($feedbackVar)) > 0.0;
                 $last = $this->ReadAttributeInteger('LastLightFeedback');
                 if ($last !== -1 && $last !== (int) $current && $this->ReadAttributeBoolean('AutoOwned')) {
@@ -158,8 +185,10 @@ class AussenlichtAutomatik2 extends IPSModule
             $this->WriteAttributeBoolean('AutoOwned', false);
             $this->WriteAttributeBoolean('ManualLockUntilPersonClear', false);
             $this->WriteAttributeInteger('OffDue', 0);
+            $this->clearSelfCommand();
         }
 
+        $this->WriteAttributeInteger('RegisteredCommandID', $commandVar);
         $this->updateVariableSubscription('RegisteredSunriseID', $sunriseVar);
         $this->updateVariableSubscription('RegisteredSunsetID', $sunsetVar);
         $this->updateVariableSubscription('RegisteredFeedbackID', $feedbackVar);
@@ -405,6 +434,7 @@ class AussenlichtAutomatik2 extends IPSModule
             if ($nightID > 0 && IPS_VariableExists($nightID) && GetValueBoolean($nightID) !== $actualNight) {
                 $this->handleSunStateChange('Watchdog');
             }
+            $this->checkPendingLightCommand();
         }
 
         if (!$this->ReadPropertyBoolean('Enabled') || !$this->cameraConfigurationReady() || $this->ReadAttributeBoolean('AuthBlocked')) {
@@ -510,41 +540,61 @@ class AussenlichtAutomatik2 extends IPSModule
     public function OffTimer(): void
     {
         $this->SetTimerInterval('OffTimer', 0);
-        $this->WriteAttributeInteger('OffDue', 0);
 
         if (!$this->lightAutomationEnabled()) {
             $this->WriteAttributeBoolean('AutoOwned', false);
+            $this->WriteAttributeInteger('OffDue', 0);
             return;
         }
 
-        // Nachts hält eine noch aktive Person das Licht an. Nach Sonnenaufgang
-        // gilt die UND-Bedingung nicht mehr und ein Automatiklicht darf aus.
+        // Solange nachts noch eine Person aktiv ist, darf nicht ausgeschaltet werden.
+        // Ein eventuell alter Timer wird verworfen; beim Übergang auf INAKTIV wird
+        // der Nachlauf durch refreshPersonAggregate() neu gestartet.
         if ($this->ReadAttributeBoolean('PersonActive') && $this->isNight()) {
+            $this->WriteAttributeInteger('OffDue', 0);
             return;
         }
         if (!$this->ReadAttributeBoolean('AutoOwned')) {
+            $this->WriteAttributeInteger('OffDue', 0);
             return;
         }
 
         $light = $this->getLightFeedback();
         if ($light === false) {
+            // Die echte LCN-Intensity bestätigt AUS. Erst jetzt ist der
+            // Ausschaltvorgang abgeschlossen und das Automatik-Eigentum endet.
             $this->WriteAttributeBoolean('AutoOwned', false);
-            return;
-        }
-        if ($light === null) {
-            if (!$this->isNight()) {
-                $this->debug('Licht', 'Tagesfreigabe: AUS zunächst verworfen, echte LCN-Rückmeldung nicht verfügbar; neuer Versuch in 15 s');
-                $this->WriteAttributeInteger('OffDue', time() + 15);
-                $this->SetTimerInterval('OffTimer', 15000);
-            } else {
-                $this->debug('Licht', 'AUS verworfen: echte LCN-Rückmeldung nicht verfügbar');
-            }
+            $this->WriteAttributeInteger('OffDue', 0);
+            $this->debug('Licht', 'Automatik AUS durch echte Intensity bestätigt');
             return;
         }
 
+        if ($light === null) {
+            // Wichtiger Fix 0.3.1: Auch nachts darf ein vorübergehend nicht lesbarer
+            // Istwert den Ausschaltvorgang nicht endgültig abbrechen. Solange die
+            // Automatik Eigentümer ist, wird die Prüfung kontrolliert wiederholt.
+            $this->WriteAttributeInteger('OffDue', time() + self::LIGHT_RECHECK_SECONDS);
+            $this->SetTimerInterval('OffTimer', self::LIGHT_RECHECK_SECONDS * 1000);
+            $this->debug('Licht', 'AUS wartet: echte LCN-Intensity momentan nicht verfügbar; erneute Prüfung in 15 s');
+            return;
+        }
+
+        // Das Licht ist laut echter Rückmeldung weiterhin EIN. AUS anfordern.
+        // AutoOwned bleibt absichtlich TRUE, bis die echte Intensity 0 meldet.
+        // RequestAction(TRUE/FALSE) bestätigt nur die Annahme der Aktion, nicht den
+        // tatsächlichen Hardwarezustand.
         if ($this->switchLight(false)) {
-            $this->WriteAttributeBoolean('AutoOwned', false);
-            $this->debug('Licht', $this->isNight() ? 'Automatik AUS nach Nachlauf' : 'Automatik AUS: Nachtfreigabe beendet');
+            $this->WriteAttributeInteger('OffDue', time() + self::LIGHT_RECHECK_SECONDS);
+            $this->SetTimerInterval('OffTimer', self::LIGHT_RECHECK_SECONDS * 1000);
+            $this->debug('Licht', $this->isNight()
+                ? 'Automatik AUS angefordert; warte auf echte Intensity=0'
+                : 'Automatik AUS wegen Ende der Nachtfreigabe angefordert; warte auf echte Intensity=0');
+        } else {
+            // Auch ein temporär fehlgeschlagener Request darf das Licht nicht dauerhaft
+            // eingeschaltet lassen. Kontrolliert erneut versuchen.
+            $this->WriteAttributeInteger('OffDue', time() + self::LIGHT_RECHECK_SECONDS);
+            $this->SetTimerInterval('OffTimer', self::LIGHT_RECHECK_SECONDS * 1000);
+            $this->debug('Licht', 'AUS-Befehl fehlgeschlagen; neuer Versuch in 15 s');
         }
     }
 
@@ -569,7 +619,7 @@ class AussenlichtAutomatik2 extends IPSModule
         $headers = [
             'GET ' . $uri . ' HTTP/1.1',
             'Host: ' . $hostHeader,
-            'User-Agent: IP-Symcon-AussenlichtAutomatik2/0.3.0',
+            'User-Agent: IP-Symcon-AussenlichtAutomatik2/0.3.2',
             'Accept: multipart/x-mixed-replace, */*',
             'Connection: keep-alive'
         ];
@@ -733,6 +783,12 @@ class AussenlichtAutomatik2 extends IPSModule
         if ($newState) {
             $this->WriteAttributeInteger('OffDue', 0);
             $this->SetTimerInterval('OffTimer', 0);
+            if ($this->ReadAttributeInteger('SelfCommandTarget') === 0) {
+                // Ein alter noch unbestätigter AUS-Befehl ist bei neuer Person nicht
+                // mehr das gewünschte Ziel. Er wird verworfen; nach dem nächsten
+                // Personenende darf genau ein neuer AUS-Befehl gesendet werden.
+                $this->clearSelfCommand();
+            }
             $this->debug('Person', 'AKTIV via ' . $source . ' | aktive Human-Events: ' . count($active));
             $this->attemptAutomaticOn($source);
             return;
@@ -775,9 +831,15 @@ class AussenlichtAutomatik2 extends IPSModule
             return;
         }
 
+        // Eigentum vor dem Request setzen: Rückmeldungen können in IP-Symcon
+        // synchron während RequestAction eintreffen. So kann eine sehr schnelle oder
+        // sehr späte Intensity-Rückmeldung das Eigentum nicht versehentlich verlieren.
+        $this->WriteAttributeBoolean('AutoOwned', true);
         if ($this->switchLight(true)) {
-            $this->WriteAttributeBoolean('AutoOwned', true);
             $this->debug('Licht', 'Automatik EIN via ' . $source);
+        } else {
+            $this->WriteAttributeBoolean('AutoOwned', false);
+            $this->debug('Licht', 'Automatik EIN fehlgeschlagen; Eigentum verworfen');
         }
     }
 
@@ -940,13 +1002,20 @@ class AussenlichtAutomatik2 extends IPSModule
         }
         if ($light === null) {
             $this->debug('Licht', 'Sonnenaufgang: AUS zunächst verworfen, echte LCN-Rückmeldung nicht verfügbar; neuer Versuch in 15 s');
-            $this->WriteAttributeInteger('OffDue', time() + 15);
-            $this->SetTimerInterval('OffTimer', 15000);
+            $this->WriteAttributeInteger('OffDue', time() + self::LIGHT_RECHECK_SECONDS);
+            $this->SetTimerInterval('OffTimer', self::LIGHT_RECHECK_SECONDS * 1000);
             return;
         }
         if ($this->switchLight(false)) {
-            $this->WriteAttributeBoolean('AutoOwned', false);
-            $this->debug('Licht', 'Automatik AUS: Sonnenaufgang beendet Nachtfreigabe');
+            // Eigentum erst nach echter Intensity=0 aufgeben. So bleibt auch bei
+            // verzögerter/fehlender Hardwareausführung eine Nachkontrolle aktiv.
+            $this->WriteAttributeInteger('OffDue', time() + self::LIGHT_RECHECK_SECONDS);
+            $this->SetTimerInterval('OffTimer', self::LIGHT_RECHECK_SECONDS * 1000);
+            $this->debug('Licht', 'Automatik AUS wegen Sonnenaufgang angefordert; warte auf echte Intensity=0');
+        } else {
+            $this->WriteAttributeInteger('OffDue', time() + self::LIGHT_RECHECK_SECONDS);
+            $this->SetTimerInterval('OffTimer', self::LIGHT_RECHECK_SECONDS * 1000);
+            $this->debug('Licht', 'Sonnenaufgang: AUS-Befehl fehlgeschlagen; neuer Versuch in 15 s');
         }
     }
 
@@ -993,12 +1062,36 @@ class AussenlichtAutomatik2 extends IPSModule
 
         $selfUntil = $this->ReadAttributeInteger('SelfCommandUntil');
         $selfTarget = $this->ReadAttributeInteger('SelfCommandTarget');
-        if (time() <= $selfUntil && $selfTarget === (int) $light) {
-            $this->debug('Licht', 'LCN-Rückmeldung zum eigenen Automatikbefehl: ' . ($light ? 'EIN' : 'AUS'));
+        if ($selfUntil > 0 && $selfTarget === (int) $light) {
+            $this->debug('Licht', 'LCN-Rückmeldung zum eigenen Automatikbefehl: ' . ($light ? 'EIN' : 'AUS')
+                . (time() > $selfUntil ? ' (verspätet)' : ''));
+            $this->clearSelfCommand();
+
+            // AUS ist erst mit echter Intensity=0 abgeschlossen. Wird diese Bestätigung
+            // empfangen, kann das Eigentum sofort und eindeutig beendet werden.
+            if (!$light && $this->ReadAttributeBoolean('AutoOwned')) {
+                $this->WriteAttributeBoolean('AutoOwned', false);
+                $this->WriteAttributeInteger('OffDue', 0);
+                $this->SetTimerInterval('OffTimer', 0);
+                $this->debug('Licht', 'Automatik AUS durch eigene echte Intensity=0 bestätigt');
+            }
             return;
         }
 
-        // Jede echte Zustandsänderung außerhalb des erwarteten Automatikbefehls hat Vorrang.
+        // Kritischer Fix 0.3.1:
+        // Eine verspätete Intensity-Rückmeldung EIN darf ein von der Automatik
+        // eingeschaltetes Licht niemals als "manuell" umklassifizieren. Bei LCN kann
+        // die echte Rückmeldung je nach Rampen-/Buslaufzeit deutlich nach dem
+        // RequestAction eintreffen. Solange AutoOwned bereits TRUE ist und der reale
+        // Zustand EIN meldet, bleibt das Eigentum erhalten.
+        if ($light && $this->ReadAttributeBoolean('AutoOwned')) {
+            $this->debug('Licht', 'LCN-Rückmeldung EIN bestätigt Automatiklicht; Eigentum bleibt erhalten');
+            return;
+        }
+
+        // Eine echte AUS-Änderung außerhalb des eigenen AUS-Befehls ist dagegen eine
+        // klare manuelle/externe Übersteuerung. Ebenso ist ein EIN bei AutoOwned=FALSE
+        // fremdes/manuelles Licht und darf später nicht von der Automatik ausgeschaltet werden.
         $this->WriteAttributeBoolean('AutoOwned', false);
         $this->WriteAttributeInteger('OffDue', 0);
         $this->SetTimerInterval('OffTimer', 0);
@@ -1010,6 +1103,48 @@ class AussenlichtAutomatik2 extends IPSModule
         }
 
         $this->debug('Licht', 'Externe/manuelle LCN-Änderung erkannt: ' . ($light ? 'EIN' : 'AUS') . '; Automatik-Eigentum verworfen');
+    }
+
+    private function checkPendingLightCommand(): void
+    {
+        $target = $this->ReadAttributeInteger('SelfCommandTarget');
+        $until = $this->ReadAttributeInteger('SelfCommandUntil');
+        if (($target !== 0 && $target !== 1) || $until <= 0 || time() <= $until) {
+            return;
+        }
+
+        $feedback = $this->getLightFeedback();
+        if ($feedback !== null && (int) $feedback === $target) {
+            $this->debug('Licht', 'Verspätete echte Intensity bestätigt Schaltziel ' . ($target === 1 ? 'EIN' : 'AUS'));
+            $this->clearSelfCommand();
+            if ($target === 0 && $this->ReadAttributeBoolean('AutoOwned')) {
+                $this->WriteAttributeBoolean('AutoOwned', false);
+                $this->WriteAttributeInteger('OffDue', 0);
+                $this->SetTimerInterval('OffTimer', 0);
+            }
+            return;
+        }
+
+        if ($target === 1) {
+            // Ein akzeptierter EIN-Befehl ohne reale EIN-Rückmeldung darf nicht
+            // unbegrenzt Eigentum behalten. Sonst könnte ein später manuell
+            // eingeschaltetes Licht fälschlich als Automatiklicht gelten und später
+            // ausgeschaltet werden. Es wird NICHT automatisch erneut getoggelt.
+            $this->clearSelfCommand();
+            if ($this->ReadAttributeBoolean('AutoOwned')) {
+                $this->WriteAttributeBoolean('AutoOwned', false);
+                $this->WriteAttributeInteger('OffDue', 0);
+                $this->SetTimerInterval('OffTimer', 0);
+            }
+            $this->debug('Licht', 'EIN-Befehl nach ' . self::LIGHT_CONFIRM_SECONDS . ' s nicht durch echte Intensity bestätigt; Eigentum sicher verworfen, kein erneutes Toggle');
+            return;
+        }
+
+        // Bei AUS hat Sicherheit vor Wiederholung Vorrang: ein erneut gesendeter
+        // Toggle könnte ein bereits physisch ausgeschaltetes Licht wieder einschalten,
+        // wenn nur die Rückmeldung hängt. Deshalb weiter prüfen, aber nicht erneut senden.
+        $this->WriteAttributeInteger('SelfCommandUntil', time() + self::LIGHT_CONFIRM_SECONDS);
+        $this->debug('Licht', 'AUS-Bestätigung überfällig; kein erneutes Toggle, echte Intensity wird weiter überwacht');
     }
 
     private function switchLight(bool $on): bool
@@ -1030,23 +1165,46 @@ class AussenlichtAutomatik2 extends IPSModule
 
         $feedback = $this->getLightFeedback();
         if ($feedback !== null && $feedback === $on) {
+            $this->clearSelfCommand();
+            return true;
+        }
+
+        // RequestAction kann bei LCN-Light/Memory-Konzepten intern ein Toggle auslösen.
+        // Derselbe akzeptierte Befehl darf deshalb NICHT alle 15 s erneut gesendet werden,
+        // nur weil die echte Intensity noch nicht nachgezogen hat. Während des
+        // Bestätigungsfensters wird ausschließlich auf Rückmeldung gewartet.
+        $pendingTarget = $this->ReadAttributeInteger('SelfCommandTarget');
+        $pendingUntil = $this->ReadAttributeInteger('SelfCommandUntil');
+        if ($pendingTarget === (int) $on && $pendingUntil > 0) {
+            $overdue = time() > $pendingUntil;
+            $this->debug('Licht', 'Schaltbefehl ' . ($on ? 'EIN' : 'AUS')
+                . ' bereits gesendet; warte auf echte Intensity-Rückmeldung'
+                . ($overdue ? ' (Bestätigung überfällig, kein erneutes Toggle)' : ''));
             return true;
         }
 
         $this->WriteAttributeInteger('SelfCommandTarget', (int) $on);
-        $this->WriteAttributeInteger('SelfCommandUntil', time() + 10);
+        $this->WriteAttributeInteger('SelfCommandUntil', time() + self::LIGHT_CONFIRM_SECONDS);
 
         try {
             $ok = RequestAction($commandVar, $on);
             if (!$ok) {
+                $this->clearSelfCommand();
                 $this->debug('Licht', 'RequestAction #' . $commandVar . ' lieferte FALSE');
                 return false;
             }
             return true;
         } catch (Throwable $e) {
+            $this->clearSelfCommand();
             $this->debug('Licht', 'Schalten fehlgeschlagen: ' . $e->getMessage());
             return false;
         }
+    }
+
+    private function clearSelfCommand(): void
+    {
+        $this->WriteAttributeInteger('SelfCommandTarget', -1);
+        $this->WriteAttributeInteger('SelfCommandUntil', 0);
     }
 
     private function setPersonActive(bool $active): void

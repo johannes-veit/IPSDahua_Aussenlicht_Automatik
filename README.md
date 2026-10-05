@@ -1,6 +1,6 @@
 # Dahua Personenerkennung / Außenlicht-Automatik für IP-Symcon 9
 
-Version **0.3.0**.
+Version **0.3.2**.
 
 ## Zweck
 
@@ -44,7 +44,7 @@ Nach wiederholt abgewiesenem Login stoppt das Modul weitere Versuche, damit ein 
 
 ## Universelle Personenerkennung
 
-Version 0.3.0 verarbeitet sowohl direkte SMD-Ereignisse als auch IVS-Ereignisse.
+Version 0.3.2 verarbeitet sowohl direkte SMD-Ereignisse als auch IVS-Ereignisse.
 
 Direkt erkannt werden u. a.:
 
@@ -160,7 +160,7 @@ Damit sind Befehl und Istzustand bewusst getrennt:
 
 - Licht war vor der Personenerkennung bereits EIN → kein Automatik-Eigentum; später kein automatisches AUS.
 - Nur Licht, das die Automatik selbst eingeschaltet hat, darf sie wieder ausschalten.
-- Eine externe/GT8-Änderung der echten Intensitätsrückmeldung verwirft das Automatik-Eigentum.
+- Eine manuelle/externe AUS-Änderung der echten Intensitätsrückmeldung verwirft das Automatik-Eigentum. Eine verspätete EIN-Rückmeldung nach einem eigenen Automatik-EIN bestätigt dagegen das Automatiklicht und darf das Eigentum nicht löschen.
 - Wird während laufender Personenerkennung manuell AUS geschaltet, bleibt die Automatik bis zum vollständigen Ende aller aktuellen Human-Ereignisse gesperrt.
 - Eine neue Person während des Nachlaufs stoppt den Ausschalt-Timer wieder.
 - Sonnenaufgang entzieht die Freigabe; nur automatik-eigenes Licht wird ausgeschaltet.
@@ -171,6 +171,21 @@ Damit sind Befehl und Istzustand bewusst getrennt:
 Standard: **180 Sekunden** nach vollständigem Ende der Personenerkennung.
 
 Sind mehrere Human-Ereignisse gleichzeitig aktiv, beginnt der Nachlauf erst, wenn alle beendet sind.
+
+### Ausschalten / Nachlauf – seit 0.3.2 gegen Doppel-Toggle abgesichert
+
+Beim Ablauf des Nachlaufs gilt die **echte LCN-Intensity** als alleinige Abschlussbestätigung:
+
+- `Intensity > 0` → AUS wird per Boolean-Aktionsvariable angefordert
+- `Intensity = 0` → AUS ist real bestätigt; erst dann endet das Automatik-Eigentum
+- Rückmeldung vorübergehend nicht verfügbar → erneute **Prüfung** nach 15 s, auch nachts
+- `RequestAction(false)` allein gilt **nicht** mehr als Beweis, dass die Hardware tatsächlich AUS ist
+- wurde ein Schaltbefehl von `RequestAction()` angenommen, wird derselbe Zielbefehl bei fehlender Intensity **nicht erneut gesendet**; das verhindert bei LCN-KURZ-/Memory-/Toggle-Aktionen ein versehentliches Zurückschalten
+- nach 60 s ohne echte EIN-Bestätigung wird `AutoOwned` sicher verworfen; ein später manuell eingeschaltetes Licht wird dadurch nicht fälschlich zum Automatiklicht
+- ein überfälliges AUS bleibt als Pending-Ziel bestehen und wird nur weiter überwacht; kein blindes erneutes Toggle
+- kommt während eines noch unbestätigten AUS eine neue Person, wird das alte AUS-Pending verworfen; nach dem nächsten Personenende darf wieder genau ein neuer AUS-Befehl erfolgen
+
+Damit bleibt die Lichtsteuerung auch bei verzögerter oder fehlender LCN-Rückmeldung deterministisch und toggle-sicher.
 
 ## Selbstüberwachung
 
@@ -226,6 +241,7 @@ Enthaltene Regressionstests prüfen u. a.:
 
 - einzeiliges `SmartMotionHuman`
 - mehrzeilige IVS-JSON-Daten über mehrere Chunks
+- Parser über **jede einzelne Byte-/Split-Grenze** sowie deterministische Zufalls-Chunkgrößen
 - Human in `Objects[]`
 - Vehicle darf nicht als Human gelten
 - START/STOP mit und ohne Event-/Rule-IDs
@@ -236,3 +252,20 @@ Enthaltene Regressionstests prüfen u. a.:
 - reine Personenerkennung
 - Boolean-Schaltvariable mit Aktion
 - Integer/Float-Intensity als echte Rückmeldung
+
+
+### Laufzeitsimulation 0.3.2
+
+Ein eigener Mock-IP-Symcon-Laufzeittest simuliert zusätzlich:
+
+- Person START/STOP und 180-s-Nachlauf
+- verzögerte Intensity-Rückmeldung
+- toggle-/Memory-basierte Schaltaktion, bei der ein doppelter AUS-Befehl das Licht wieder einschalten würde
+- manuell bereits eingeschaltetes Licht
+- manuelles AUS während laufender Personenerkennung
+- Sonnenaufgang mit aktiver Person
+- Wechsel der Licht-I/O-Konfiguration
+- reinen Personenerkennungsmodus ohne Lichtbefehl
+- Streamverlust
+- überfälliges unbestätigtes EIN
+- neue Person während eines noch unbestätigten AUS

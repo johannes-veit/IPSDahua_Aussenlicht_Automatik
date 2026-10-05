@@ -26,3 +26,6 @@ Geprüft werden insbesondere:
 - Betriebsart nur Personenerkennung
 - Boolean-Lichtschaltvariable mit Aktion
 - Integer/Float-Intensity als echte Rückmeldung
+
+- `test_runtime_simulation.php`: Mock-IP-Symcon-Laufzeitsimulation für Person/Nacht/Nachlauf/Manual Override/Toggle-Sicherheit/I-O-Wechsel.
+- `test_parser_chunk_fuzz.php`: Parserprüfung über Byte-, alle Einzel-Split- und deterministische Zufalls-TCP-Chunkgrenzen.

@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.3.2 – 2026-10-04
+
+- umfangreiche Laufzeitsimulation der v0.3.1 mit Person START/STOP, Nachlauf, verzögerter LCN-Intensity, manueller Übersteuerung, Sonnenaufgang und reinem Personenerkennungsmodus
+- kritische Schwachstelle aus v0.3.1 behoben: ein akzeptierter AUS-Befehl konnte bei noch verzögerter Intensity alle 15 s erneut gesendet werden; bei toggle-/Memory-basierten LCN-Aktionen konnte dies das Licht wieder EIN toggeln
+- ein von `RequestAction()` akzeptierter identischer Schaltbefehl wird bis zur echten Rückmeldung **überhaupt nicht erneut gesendet**; das 60-s-Fenster dient nur als Erwartungs-/Diagnosegrenze, danach wird ein überfälliger Zustand protokolliert statt erneut zu toggeln
+- echte `Intensity=0` nach eigenem AUS beendet `AutoOwned` und den Nachlauf-Timer sofort
+- fehlgeschlagene/geworfene `RequestAction()` löscht den eigenen Pending-Befehl sauber
+- Licht-I/O-Wechsel in einer bestehenden Instanz verwirft altes Automatik-Eigentum, damit niemals eine neu ausgewählte Lampe aufgrund eines alten Zustands ausgeschaltet wird
+- Self-Command-Zustand wird bei `ApplyChanges()` sicher zurückgesetzt
+- nach 60 s ohne echte EIN-Bestätigung wird `AutoOwned` verworfen, ohne einen zweiten EIN-Toggle zu senden; dadurch kann ein später manuell eingeschaltetes Licht nicht fälschlich als Automatiklicht übernommen werden
+- ein noch unbestätigter AUS-Befehl wird bei einer neu erkannten Person als veraltetes Ziel verworfen; nach dem nächsten Personenende kann wieder genau ein neuer AUS-Befehl gesendet werden
+- verspätete passende Rückmeldungen werden auch nach Ablauf der 60-s-Diagnosegrenze noch als Bestätigung des eigenen Pending-Ziels erkannt
+- Parser zusätzlich über jede mögliche Einzel-Splitposition, byteweise TCP-Zerlegung und 50 deterministische Zufalls-Chunkfolgen getestet
+- neuer vollständiger Mock-Laufzeittest für die Licht-Zustandsmaschine ergänzt
+
+## 0.3.1 – 2026-10-04
+
+- Fehler behoben: verspätete echte `Intensity=EIN` nach einem Automatik-EIN konnte fälschlich als manuelle Änderung gewertet werden und `AutoOwned` löschen; dadurch fiel der spätere AUS-Nachlauf aus
+- Automatik-Eigentum wird beim EIN-Befehl jetzt vor `RequestAction()` gesetzt und bei fehlgeschlagenem Befehl sauber zurückgenommen
+- bestätigende/verspätete `Intensity=EIN`-Rückmeldungen erhalten das Automatik-Eigentum
+- Ausschalten gilt erst dann als abgeschlossen, wenn die echte LCN-Intensity `0` meldet
+- `RequestAction(false)` allein beendet das Automatik-Eigentum nicht mehr
+- nach AUS-Anforderung wird die echte Rückmeldung nach 15 s erneut geprüft
+- temporär nicht verfügbare Intensity beim Ablauf des Nachlaufs führt jetzt **auch nachts** zu einem erneuten Versuch statt zu einem endgültigen Abbruch
+- fehlgeschlagene AUS-Anforderung wird nach 15 s erneut versucht
+- Self-Command-Bestätigungsfenster für langsame LCN-/Rampenrückmeldungen von 10 s auf 60 s erweitert
+- Sonnenaufgang verwendet denselben bestätigten AUS-Ablauf
+- Regressionstest für die Ausschaltlogik ergänzt
+
 ## 0.3.0 – 2026-10-04
 
 - Dahua-Parser auf **vollständige mehrzeilige IVS-Ereignisse** erweitert; JSON darf über mehrere TCP-Chunks verteilt sein

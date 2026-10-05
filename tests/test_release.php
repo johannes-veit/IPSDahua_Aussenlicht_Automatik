@@ -14,8 +14,8 @@ $module = json_decode((string) file_get_contents($root . '/AussenlichtAutomatik2
 $source = (string) file_get_contents($root . '/AussenlichtAutomatik2/module.php');
 $form = (string) file_get_contents($root . '/AussenlichtAutomatik2/form.json');
 
-if (($library['version'] ?? '') !== '0.3.0' || (int) ($library['build'] ?? 0) < 7) {
-    failRelease('library.json ist nicht auf 0.3.0/build>=7');
+if (($library['version'] ?? '') !== '0.3.2' || (int) ($library['build'] ?? 0) < 9) {
+    failRelease('library.json ist nicht auf 0.3.2/build>=9');
 }
 if (($library['id'] ?? '') !== '{E5E78612-3E17-4E92-9D0C-A2B0F8E1B690}') {
     failRelease('Library-GUID wurde unerwartet verändert');
@@ -32,7 +32,12 @@ foreach ([
     "RegisterTimer('PersonStateTimer'",
     "HasAction(\$commandVar)",
     "RequestAction(\$commandVar, \$on)",
-    "return ((float) GetValue(\$varID)) > 0.0;"
+    "return ((float) GetValue(\$varID)) > 0.0;",
+    "if (\$light && \$this->ReadAttributeBoolean('AutoOwned'))",
+    "Automatik AUS angefordert; warte auf echte Intensity=0",
+    'bereits gesendet; warte auf echte Intensity-Rückmeldung',
+    "RegisterAttributeInteger('RegisteredCommandID', 0)",
+    "private function clearSelfCommand(): void"
 ] as $needle) {
     if (!str_contains($source, $needle)) {
         failRelease('Release-Code fehlt: ' . $needle);
