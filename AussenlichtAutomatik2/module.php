@@ -41,6 +41,9 @@ class AussenlichtAutomatik2 extends IPSModule
         $this->RegisterPropertyInteger('LightCommandVariableID', 0);
         $this->RegisterPropertyInteger('LightFeedbackVariableID', 0);
         $this->RegisterPropertyInteger('AfterRunSeconds', 180);
+        // 0: bisheriger Nachlauf. >0: Licht bleibt mindestens bis zur Ruhezeit
+        // nach der letzten echten Human-Meldung an (je Kamera individuell).
+        $this->RegisterPropertyInteger('StayQuietSeconds', 0);
         $this->RegisterPropertyBoolean('DebugEvents', false);
 
         $this->RegisterAttributeBoolean('PersonActive', false);
@@ -50,6 +53,9 @@ class AussenlichtAutomatik2 extends IPSModule
         $this->RegisterAttributeInteger('SelfCommandUntil', 0);
         $this->RegisterAttributeInteger('SelfCommandTarget', -1);
         $this->RegisterAttributeInteger('OffDue', 0);
+        $this->RegisterAttributeInteger('LastHumanActivity', 0);
+        $this->RegisterAttributeInteger('OffValidationSince', 0);
+        $this->RegisterAttributeInteger('ManualQuietLockUntil', 0);
         $this->RegisterAttributeInteger('LastCameraRx', 0);
         $this->RegisterAttributeInteger('LastHttpRequest', 0);
         $this->RegisterAttributeBoolean('Streaming', false);
@@ -108,6 +114,17 @@ class AussenlichtAutomatik2 extends IPSModule
         $this->WriteAttributeString('DigestChallenge', '{}');
         $this->WriteAttributeInteger('DigestNC', 0);
         $this->clearSelfCommand();
+        // Upgrade aus älteren Modulen ohne LastHumanActivity: bereits gespeichertes
+        // Ereignis verwenden, niemals einen künstlichen neuen Human-START erfinden.
+        if ($this->ReadAttributeInteger('LastHumanActivity') <= 0) {
+            $legacy = json_decode($this->ReadAttributeString('LastHumanEvent'), true);
+            if (is_array($legacy)) {
+                $timestamp = (int) ($legacy['time'] ?? 0);
+                if ($timestamp > 0 && $timestamp <= time()) {
+                    $this->WriteAttributeInteger('LastHumanActivity', $timestamp);
+                }
+            }
+        }
 
         // Ein Modulupdate/ApplyChanges trennt den Eventstream. Aktive Human-Zustände
         // dürfen deshalb nicht aus einem alten Stream übernommen werden.
@@ -164,6 +181,8 @@ class AussenlichtAutomatik2 extends IPSModule
                 $this->WriteAttributeBoolean('AutoOwned', false);
                 $this->WriteAttributeBoolean('ManualLockUntilPersonClear', false);
                 $this->WriteAttributeInteger('OffDue', 0);
+                $this->WriteAttributeInteger('OffValidationSince', 0);
+                $this->WriteAttributeInteger('ManualQuietLockUntil', 0);
                 $this->SetTimerInterval('OffTimer', 0);
                 $this->clearSelfCommand();
                 $this->debug('Licht', 'Licht-I/O geändert; altes Automatik-Eigentum sicher verworfen');
@@ -538,6 +557,13 @@ class AussenlichtAutomatik2 extends IPSModule
             'LightFeedbackRaw' => $this->getLightFeedbackRaw(),
             'LightFeedback' => $this->getLightFeedback(),
             'OffDue' => $this->ReadAttributeInteger('OffDue'),
+            'StayQuietSeconds' => $this->getStayQuietSeconds(),
+            'LastHumanActivity' => $this->ReadAttributeInteger('LastHumanActivity'),
+            'LastHumanActivityAge' => $this->ReadAttributeInteger('LastHumanActivity') > 0 ? max(0, time() - $this->ReadAttributeInteger('LastHumanActivity')) : null,
+            'QuietHoldUntil' => $this->getQuietHoldUntil(),
+            'CameraStreamHealthy' => $this->isCameraStreamHealthy(time()),
+            'OffValidationSince' => $this->ReadAttributeInteger('OffValidationSince'),
+            'ManualQuietLockUntil' => $this->ReadAttributeInteger('ManualQuietLockUntil'),
             'Streaming' => $this->ReadAttributeBoolean('Streaming'),
             'AuthPending' => $this->ReadAttributeBoolean('AuthPending'),
             'AuthBlocked' => $this->ReadAttributeBoolean('AuthBlocked'),
@@ -573,6 +599,19 @@ class AussenlichtAutomatik2 extends IPSModule
         }
         if (!$this->ReadAttributeBoolean('AutoOwned')) {
             $this->WriteAttributeInteger('OffDue', 0);
+            $this->WriteAttributeInteger('OffValidationSince', 0);
+            return;
+        }
+
+        // Für einen Grillabend zählt echte erneute Human-Aktivität. Bei kürzeren
+        // SMD-Pausen bleibt das automatik-eigene Licht durchgehend eingeschaltet.
+        // Nach Sonnenaufgang gilt diese Ruhezeit bewusst NICHT.
+        $now = time();
+        $quietUntil = $this->getQuietHoldUntil();
+        if ($this->isNight() && $quietUntil > $now) {
+            $this->WriteAttributeInteger('OffDue', $quietUntil);
+            $this->SetTimerInterval('OffTimer', max(1000, ($quietUntil - $now) * 1000));
+            $this->debug('Licht', 'AUS verschoben: erneute Human-Aktivität; Ruhezeit bis ' . date('H:i:s', $quietUntil));
             return;
         }
 
@@ -594,6 +633,32 @@ class AussenlichtAutomatik2 extends IPSModule
             $this->SetTimerInterval('OffTimer', self::LIGHT_RECHECK_SECONDS * 1000);
             $this->debug('Licht', 'AUS wartet: echte LCN-Intensity momentan nicht verfügbar; erneute Prüfung in 15 s');
             return;
+        }
+
+        // Vor dem AUS muss der echte Kamera-Eventstream aktuell sein. Ein bloßes
+        // "Person erkannt = AUS" oder ein alter Variablen-Zeitstempel reicht nicht.
+        // Bei Kamera-/Socketfehlern bekommt der bestehende Watchdog Zeit zum
+        // Wiederverbinden. Ein dauerhaft defekter Stream erzeugt aber nicht
+        // unbegrenzt Dauerlicht.
+        if ($this->isNight() && !$this->isCameraStreamHealthy($now)) {
+            $since = $this->ReadAttributeInteger('OffValidationSince');
+            if ($since <= 0 || $since > $now) {
+                $since = $now;
+                $this->WriteAttributeInteger('OffValidationSince', $since);
+            }
+            $grace = $this->getOfflineValidationGraceSeconds();
+            if (($now - $since) < $grace) {
+                $this->WriteAttributeInteger('OffDue', $now + self::LIGHT_RECHECK_SECONDS);
+                $this->SetTimerInterval('OffTimer', self::LIGHT_RECHECK_SECONDS * 1000);
+                $this->debug('Licht', 'AUS aufgeschoben: Kamera-Eventstream nicht aktuell; '
+                    . 'Watchdog prüft/repariert Verbindung, max. Schonzeit ' . $grace . ' s');
+                return;
+            }
+            $this->debug('Licht', 'Kamera seit ' . ($now - $since)
+                . ' s nicht verifizierbar; Schonzeit abgelaufen. '
+                . 'Automatik-eigenes Licht wird nach abgelaufener Ruhezeit ausgeschaltet.');
+        } else {
+            $this->WriteAttributeInteger('OffValidationSince', 0);
         }
 
         // Das Licht ist laut echter Rückmeldung weiterhin EIN. AUS anfordern.
@@ -833,6 +898,45 @@ class AussenlichtAutomatik2 extends IPSModule
         return max(10, $this->ReadPropertyInteger('AfterRunSeconds'));
     }
 
+    private function getStayQuietSeconds(): int
+    {
+        // 0 bedeutet alte reine Nachlauf-Logik, 1..21600 ist ein Ruhefenster.
+        return max(0, min(21600, $this->ReadPropertyInteger('StayQuietSeconds')));
+    }
+
+    private function getQuietHoldUntil(): int
+    {
+        $quiet = $this->getStayQuietSeconds();
+        $last = $this->ReadAttributeInteger('LastHumanActivity');
+        return $quiet > 0 && $last > 0 && $last <= time() ? $last + $quiet : 0;
+    }
+
+    /**
+     * Ein lebendiger TCP-Stream (HTTP-200 + Heartbeat) ist nur die
+     * Verbindungsbestätigung, niemals ein Nachweis für fehlende Personen.
+     */
+    private function isCameraStreamHealthy(int $now): bool
+    {
+        if (!$this->ReadPropertyBoolean('Enabled') || !$this->cameraConfigurationReady()
+            || $this->ReadAttributeBoolean('AuthBlocked') || !$this->ReadAttributeBoolean('Streaming')) {
+            return false;
+        }
+        $last = $this->ReadAttributeInteger('LastCameraRx');
+        if ($last <= 0 || $last > $now || ($now - $last) > 25) {
+            return false;
+        }
+        $parent = $this->getParentID();
+        return $parent > 0 && IPS_InstanceExists($parent)
+            && (int) IPS_GetInstance($parent)['InstanceStatus'] === 102;
+    }
+
+    private function getOfflineValidationGraceSeconds(): int
+    {
+        // Begrenzter Schonzeitraum, instanzabhängig; kein unbegrenztes Dauerlicht
+        // bei dauerhaft ausgefallener Kamera. Mindestens 60, maximal 900 s.
+        return max(60, min(900, max($this->getConfiguredPersonTimeoutSeconds(), $this->getStayQuietSeconds())));
+    }
+
     private function hasHumanTracking(): bool
     {
         return $this->ReadAttributeBoolean('PersonActive')
@@ -853,6 +957,7 @@ class AussenlichtAutomatik2 extends IPSModule
         }
 
         if ($newState) {
+            $this->WriteAttributeInteger('OffValidationSince', 0);
             $this->WriteAttributeInteger('OffDue', 0);
             $this->SetTimerInterval('OffTimer', 0);
             if ($this->ReadAttributeInteger('SelfCommandTarget') === 0) {
@@ -881,8 +986,9 @@ class AussenlichtAutomatik2 extends IPSModule
         if (!$this->lightAutomationEnabled()) {
             return;
         }
-        if ($this->ReadAttributeBoolean('ManualLockUntilPersonClear')) {
-            $this->debug('Licht', 'Keine Automatik-EIN: manuelle Sperre bis Ende der aktuellen Personenerkennung');
+        if ($this->ReadAttributeBoolean('ManualLockUntilPersonClear')
+            || time() < $this->ReadAttributeInteger('ManualQuietLockUntil')) {
+            $this->debug('Licht', 'Keine Automatik-EIN: manuelle Sperre / manuelles AUS während Aufenthalt');
             return;
         }
         if (!$this->isNight()) {
@@ -968,6 +1074,9 @@ class AussenlichtAutomatik2 extends IPSModule
         ];
         $encoded = json_encode($value, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
         $this->WriteAttributeString('LastHumanEvent', $encoded === false ? '' : $encoded);
+        // Nur tatsächliche, passend zugeordnete Human-Ereignisse erneuern die
+        // Aufenthaltsruhezeit. HTTP-Heartbeats und Datenbytes zählen NIE dazu.
+        $this->WriteAttributeInteger('LastHumanActivity', time());
     }
 
     private function scheduleOff(): void
@@ -976,10 +1085,14 @@ class AussenlichtAutomatik2 extends IPSModule
             return;
         }
 
-        $seconds = $this->getConfiguredPersonTimeoutSeconds();
-        $this->WriteAttributeInteger('OffDue', time() + $seconds);
+        $now = time();
+        $due = max($now + $this->getConfiguredPersonTimeoutSeconds(), $this->getQuietHoldUntil());
+        $seconds = max(1, $due - $now);
+        $this->WriteAttributeInteger('OffValidationSince', 0);
+        $this->WriteAttributeInteger('OffDue', $due);
         $this->SetTimerInterval('OffTimer', $seconds * 1000);
-        $this->debug('Licht', 'Nachlauf gestartet: ' . $seconds . ' s');
+        $this->debug('Licht', 'Nachlauf bis ' . date('H:i:s', $due)
+            . ' (' . $seconds . ' s; pro Kamera, inkl. Aufenthaltsruhezeit)');
     }
 
     private function restoreOffTimer(): void
@@ -1020,10 +1133,12 @@ class AussenlichtAutomatik2 extends IPSModule
             // Sicherheitsnetz nach Neustart/Update: Automatik-Eigentum darf nie ohne
             // Ausschaltzeitpunkt bestehen, wenn keine Person mehr aktiv ist.
             $seconds = $this->getConfiguredPersonTimeoutSeconds();
-            $due = time() + $seconds;
+            $due = max(time() + $seconds, $this->getQuietHoldUntil());
             $this->WriteAttributeInteger('OffDue', $due);
         }
 
+        $due = max($due, $this->getQuietHoldUntil());
+        $this->WriteAttributeInteger('OffDue', $due);
         $remaining = max(1, $due - time());
         $this->SetTimerInterval('OffTimer', $remaining * 1000);
     }
@@ -1166,7 +1281,17 @@ class AussenlichtAutomatik2 extends IPSModule
         // fremdes/manuelles Licht und darf später nicht von der Automatik ausgeschaltet werden.
         $this->WriteAttributeBoolean('AutoOwned', false);
         $this->WriteAttributeInteger('OffDue', 0);
+        $this->WriteAttributeInteger('OffValidationSince', 0);
         $this->SetTimerInterval('OffTimer', 0);
+
+        // GT8/manuelles AUS bleibt auch zwischen zwei Human-Impulsen vorrangig.
+        // Während der zuletzt bestätigten Aufenthaltsruhezeit blockieren wir
+        // erneutes automatisches EIN bis maximal zu deren Länge ab jetzt.
+        if (!$light && $this->getQuietHoldUntil() > time()) {
+            $lockUntil = time() + max($this->getConfiguredPersonTimeoutSeconds(), $this->getStayQuietSeconds());
+            $this->WriteAttributeInteger('ManualQuietLockUntil', $lockUntil);
+            $this->debug('Licht', 'Manuelles AUS während Aufenthalt: Automatik-EIN gesperrt bis ' . date('H:i:s', $lockUntil));
+        }
 
         if (!$light && $this->ReadAttributeBoolean('PersonActive')) {
             // Benutzer hat trotz laufender Personenerkennung ausgeschaltet.

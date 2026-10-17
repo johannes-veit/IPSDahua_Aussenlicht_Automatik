@@ -14,8 +14,8 @@ $module = json_decode((string) file_get_contents($root . '/AussenlichtAutomatik2
 $source = (string) file_get_contents($root . '/AussenlichtAutomatik2/module.php');
 $form = (string) file_get_contents($root . '/AussenlichtAutomatik2/form.json');
 
-if (($library['version'] ?? '') !== '0.3.4' || (int) ($library['build'] ?? 0) < 11) {
-    failRelease('library.json ist nicht auf 0.3.4/build>=11');
+if (($library['version'] ?? '') !== '0.3.5' || (int) ($library['build'] ?? 0) < 12) {
+    failRelease('library.json ist nicht auf 0.3.5/build>=12');
 }
 if (($library['id'] ?? '') !== '{E5E78612-3E17-4E92-9D0C-A2B0F8E1B690}') {
     failRelease('Library-GUID wurde unerwartet verändert');
@@ -40,7 +40,13 @@ foreach ([
     "private function clearSelfCommand(): void",
     "private function expireStaleHumanSignals(int \$now): void",
     "getConfiguredPersonTimeoutSeconds()",
-    "ReadPropertyInteger('AfterRunSeconds')"
+    "ReadPropertyInteger('AfterRunSeconds')",
+    "RegisterPropertyInteger('StayQuietSeconds', 0)",
+    "RegisterAttributeInteger('LastHumanActivity', 0)",
+    "RegisterAttributeInteger('OffValidationSince', 0)",
+    "private function isCameraStreamHealthy(int \$now): bool",
+    "private function getQuietHoldUntil(): int",
+    "ManualQuietLockUntil"
 ] as $needle) {
     if (!str_contains($source, $needle)) {
         failRelease('Release-Code fehlt: ' . $needle);

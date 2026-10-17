@@ -142,6 +142,10 @@ function makeModule(bool $lightAutomation = true): AussenlichtAutomatik2
     $m->props['AfterRunSeconds'] = 180;
     $m->ApplyChanges();
     $m->WriteAttributeBoolean('Streaming', true);
+    // HTTP-200-Stream und kürzlich empfangener Heartbeat gehören zu einer
+    // gesunden Kameraverbindung; andernfalls ist die AUS-Vorabprüfung korrekt
+    // vorsichtig und würde die alten Licht-Tests zunächst verzögern.
+    $m->WriteAttributeInteger('LastCameraRx', time());
     return $m;
 }
 
@@ -503,5 +507,133 @@ assertSim(!$m15->ReadAttributeBoolean('PersonActive'),
     'Reine Erkennung muss 25-s-Instanztimeout respektieren');
 assertSim(count($GLOBALS['simActions']) === 0,
     'Reine Personenerkennung darf nach individuellem Timeout kein Licht schalten');
+
+
+// 21) Grillabend: Person ist real nicht mehr im Detektionsfeld (STOP), das
+// automatische Licht muss aber auf längere echte Ruhe ohne Human warten.
+$m16 = makeModule(true);
+$m16->props['StayQuietSeconds'] = 3600;
+$m16->ApplyChanges();
+$m16->WriteAttributeBoolean('Streaming', true);
+$m16->WriteAttributeInteger('LastCameraRx', time());
+resetActions(false, 0);
+event($m16, 'Start');
+feedback($m16, 100);
+event($m16, 'Stop');
+assertSim(!$m16->ReadAttributeBoolean('PersonActive'), 'STOP muss trotz Aufenthaltsschutz Rohstatus AUS setzen');
+assertSim($m16->ReadAttributeBoolean('AutoOwned'), 'Licht darf nach STOP nicht Eigentum verlieren');
+assertSim(($m16->timers['OffTimer'] ?? 0) === 3600000,
+    'Aufenthaltsschutz 3600 s muss individuellen OffTimer statt 180 s verwenden');
+$m16->OffTimer(); // ungeplante/frühe Timer-Ausführung
+assertSim(count($GLOBALS['simActions']) === 1, 'Grillabend: bei frischer Human-Aktivität kein AUS senden');
+assertSim(($m16->timers['OffTimer'] ?? 0) >= 3598000,
+    'Früher OffTimer muss die verbleibende Ruhezeit wiederherstellen');
+$m16->DumpState();
+$state = json_decode(end($m16->debug)[1], true);
+assertSim(($state['StayQuietSeconds'] ?? null) === 3600
+    && ($state['LastHumanActivityAge'] ?? 999999) < 10
+    && ($state['CameraStreamHealthy'] ?? false) === true,
+    'State-Debug muss Ruhezeit, Human-Zeit und Kamerazustand getrennt nennen');
+
+// 22) Ein alter Heartbeat darf die Human-Ruhezeit NICHT verlängern.
+$lastHuman = $m16->ReadAttributeInteger('LastHumanActivity');
+$m16->WriteAttributeInteger('LastCameraRx', time());
+$m16->Watchdog();
+assertSim($m16->ReadAttributeInteger('LastHumanActivity') === $lastHuman,
+    'Kamera-Heartbeat ist keine neue Personenerkennung');
+
+// 23) Bei fortlaufenden Personenereignissen wird die Ruhezeit verlängert,
+// auch wenn in der Zwischenzeit der Rohstatus bereits AUS war.
+$m16->WriteAttributeInteger('LastHumanActivity', time() - 1000);
+event($m16, 'Start');
+event($m16, 'Stop');
+assertSim($m16->ReadAttributeInteger('LastHumanActivity') >= time() - 2,
+    'Neue Human-Meldung muss Aufenthaltsruhezeit frisch starten');
+assertSim(($m16->timers['OffTimer'] ?? 0) === 3600000,
+    'Bei neuer Personenerkennung darf die Ruhezeit nicht kumulativ verkürzt werden');
+
+// 24) Ablauf der gesamten Ruhezeit: exakt ein AUS, mit echter Kamera-Heartbeat-Prüfung.
+$m16->WriteAttributeInteger('LastHumanActivity', time() - 3601);
+$m16->WriteAttributeInteger('LastCameraRx', time());
+$m16->OffTimer();
+assertSim(count($GLOBALS['simActions']) === 2 && end($GLOBALS['simActions'])[1] === false,
+    'Nur nach vollständiger Ruhe bei gültigem Stream ausschalten');
+$m16->OffTimer();
+assertSim(count($GLOBALS['simActions']) === 2, 'Kein Doppel-Toggle AUS bei verzögerter LCN-Rückmeldung');
+
+// 25) Kameraverlust zur Ausschaltzeit: kein sofortiges AUS.
+// Die existierende 15-s-Recheck- und Watchdog-Reconnect-Logik übernimmt.
+$m17 = makeModule(true);
+$m17->props['StayQuietSeconds'] = 900;
+$m17->ApplyChanges();
+$m17->WriteAttributeBoolean('Streaming', true);
+$m17->WriteAttributeInteger('LastCameraRx', time());
+resetActions(false, 0);
+event($m17, 'Start');
+feedback($m17, 100);
+event($m17, 'Stop');
+$m17->WriteAttributeInteger('LastHumanActivity', time() - 901);
+$m17->WriteAttributeInteger('LastCameraRx', time() - 90);
+$m17->OffTimer();
+assertSim(count($GLOBALS['simActions']) === 1,
+    'Veralteter Kamera-Heartbeat darf kein unmittelbares AUS veranlassen');
+assertSim($m17->ReadAttributeInteger('OffValidationSince') >= time() - 2,
+    'Nach Ausfall muss Diagnose-Schonfrist gestartet werden');
+assertSim(($m17->timers['OffTimer'] ?? 0) === 15000,
+    'Vor-AUS-Verbindungsprüfung muss nach 15 Sekunden erneut laufen');
+// Verbindung kommt zurück: AUS erst nach frischem HTTP-Stream/Heartbeat.
+$m17->WriteAttributeInteger('LastCameraRx', time());
+$m17->OffTimer();
+assertSim(count($GLOBALS['simActions']) === 2 && end($GLOBALS['simActions'])[1] === false,
+    'Nach erfolgreicher Revalidierung darf Licht AUS gehen');
+
+// 26) Unbegrenzt defekte Kamera erzeugt kein unbegrenztes Dauerlicht.
+$m18 = makeModule(true);
+resetActions(false, 0);
+event($m18, 'Start');
+feedback($m18, 100);
+event($m18, 'Stop');
+$m18->WriteAttributeInteger('LastCameraRx', time() - 90);
+$m18->WriteAttributeInteger('OffValidationSince', time() - 901);
+$m18->OffTimer();
+assertSim(count($GLOBALS['simActions']) === 2 && end($GLOBALS['simActions'])[1] === false,
+    'Bei Ablauf der begrenzten Kamera-Schonfrist darf AUS angefordert werden');
+
+// 27) GT8/manuelles AUS hat auch während einer langen Ruhephase Vorrang.
+$m19 = makeModule(true);
+$m19->props['StayQuietSeconds'] = 3600;
+$m19->ApplyChanges();
+$m19->WriteAttributeBoolean('Streaming', true);
+$m19->WriteAttributeInteger('LastCameraRx', time());
+resetActions(false, 0);
+event($m19, 'Start');
+feedback($m19, 100);
+event($m19, 'Stop');
+$GLOBALS['simHardwareLight'] = false;
+feedback($m19, 0);
+assertSim(!$m19->ReadAttributeBoolean('AutoOwned'), 'Manuelles AUS muss Eigentum löschen');
+assertSim($m19->ReadAttributeInteger('ManualQuietLockUntil') > time(),
+    'Manuelles AUS während Aufenthalt muss erneutes Auto-EIN sperren');
+event($m19, 'Start');
+assertSim(count($GLOBALS['simActions']) === 1,
+    'Nächster START darf manuell ausgeschaltetes Licht nicht wieder einschalten');
+event($m19, 'Stop');
+
+// 28) Sonnenaufgang beendet automatisches Licht trotz Aufenthaltsschutz.
+$m20 = makeModule(true);
+$m20->props['StayQuietSeconds'] = 3600;
+$m20->ApplyChanges();
+$m20->WriteAttributeBoolean('Streaming', true);
+$m20->WriteAttributeInteger('LastCameraRx', time());
+resetActions(false, 0);
+event($m20, 'Start');
+feedback($m20, 100);
+event($m20, 'Stop');
+$now = time();
+$GLOBALS['simVars'][1]['value'] = $now + 36000; // Sunrise morgen -> Tag
+$GLOBALS['simVars'][2]['value'] = $now + 3600;
+$m20->MessageSink(time(), 1, 10603, [$GLOBALS['simVars'][1]['value'], true, 0]);
+assertSim(count($GLOBALS['simActions']) === 2 && end($GLOBALS['simActions'])[1] === false,
+    'Sonnenaufgang muss ohne Warten auf Aufenthaltsschutz AUS anfordern');
 
 echo "OK: vollständige Laufzeitsimulation Licht/Person/Nacht/Manual/Config bestanden\n";

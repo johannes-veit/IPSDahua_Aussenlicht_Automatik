@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.5 – 2026-10-17
+
+- neuer optionaler Aufenthaltsschutz pro Kamera über `StayQuietSeconds` (0 bis 21600 s, Default 0 = bisheriges Verhalten); Terrasse/Grillabend: 3600 s empfohlen
+- trennt echten Human-Status (`Person erkannt`) von der Licht-Ruhezeit: STOP beendet die Erkennung sofort, ohne dadurch automatisch bereits das Licht auszuschalten
+- jeder tatsächliche passende Human-START/STOP/PULSE verlängert `LastHumanActivity`; niemals ein TCP-Heartbeat; das Licht bleibt AN bis mindestens zum Ende der individuell eingestellten Ruhezeit sowie dem normalen Nachlauf
+- direkt vor dem nächtlichen AUS prüft `OffTimer` frischen HTTP-Stream/Socket/Heartbeat; bei Ausfall wird bis zur begrenzten Schonfrist (instanzabhängig 60 bis 900 s) gewartet, während der Watchdog reconnecten kann
+- ein wiederhergestellter Stream allein beweist keine Abwesenheit; nach dauerhafter Kamera-Störung darf das Licht nach Ablauf der Schonfrist ausgehen, um unbegrenztes Dauerlicht zu vermeiden
+- manuelles AUS während des Aufenthaltsschutzes sperrt automatisches Wiedereinschalten zeitlich, damit GT8/LCN Vorrang behält
+- Sonnenaufgang hat weiterhin Vorrang; alte Schutzfunktionen gegen doppelte Toggle-AUS-Befehle bleiben bestehen
+- Diagnose ohne neue sichtbare Variablen: `LastHumanActivity`, `QuietHoldUntil`, `CameraStreamHealthy`, `OffValidationSince`, `ManualQuietLockUntil`
+- neue Simulationen für Grillabend, Roh-STOP, neue Human-Signale, Heartbeats, Kameraausfall, Kamera-Wiederverbindung, manuelle Übersteuerung und Sonnenaufgang
+
+
 ## 0.3.4 – 2026-10-17
 
 - pro-Kamera-Einstellung statt starrer 180-s-Grenze: der Human-START-Ausfallschutz liest `AfterRunSeconds` der jeweiligen AussenlichtAutomatik2-Instanz

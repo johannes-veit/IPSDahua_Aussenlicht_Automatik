@@ -103,6 +103,21 @@
           "caption": "Jede Instanz nutzt ihren eigenen Wert: fehlendes STOP beendet Person erkannt nach dieser Zeit (Watchdog max. 15 s später); der Lichtnachlauf beginnt erst danach. Eine reguläre STOP-Meldung beendet Person erkannt sofort."
         },
         {
+          "type": "NumberSpinner",
+          "name": "StayQuietSeconds",
+          "caption": "Aufenthaltsschutz – Licht-Ruhezeit nach letzter Human-Meldung (Sekunden, 0 = AUS)",
+          "minimum": 0,
+          "maximum": 21600
+        },
+        {
+          "type": "Label",
+          "caption": "Beispiel Terrasse/Grillabend: 3600 = mindestens 60 Minuten ohne neue Personenerkennung. Jede neue Human-Meldung verlängert diese Ruhezeit. Nach echter STOP-Erkennung bleibt Person erkannt AUS, während das Licht weiterhin AN bleiben kann. 0 bewahrt bisheriges Verhalten. Pro Kamera individuell."
+        },
+        {
+          "type": "Label",
+          "caption": "Vor einem nächtlichen AUS wird der Dahua-Ereignisstream geprüft; bei Verbindungsverlust wird vorübergehend gewartet und der vorhandene Watchdog stellt die Verbindung wieder her. Ein Kamera-Neustart beweist keine leere Terrasse."
+        },
+        {
           "type": "Label",
           "caption": "Schaltbedingung bei aktivierter Lichtautomatik: Person erkannt UND nach Sonnenuntergang/vor Sonnenaufgang = Licht EIN. Helligkeits- oder Dunkelheitswerte werden nicht verwendet."
         },

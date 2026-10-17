@@ -1,6 +1,6 @@
 # Dahua Personenerkennung / Außenlicht-Automatik für IP-Symcon 9
 
-Version **0.3.4**.
+Version **0.3.5**.
 
 ## Zweck
 
@@ -44,7 +44,7 @@ Nach wiederholt abgewiesenem Login stoppt das Modul weitere Versuche, damit ein 
 
 ## Universelle Personenerkennung
 
-Version 0.3.4 verarbeitet sowohl direkte SMD-Ereignisse als auch IVS-Ereignisse.
+Version 0.3.5 verarbeitet sowohl direkte SMD-Ereignisse als auch IVS-Ereignisse.
 
 Direkt erkannt werden u. a.:
 
@@ -180,6 +180,44 @@ Damit sind Befehl und Istzustand bewusst getrennt:
 - Eine neue Person während des Nachlaufs stoppt den Ausschalt-Timer wieder.
 - Sonnenaufgang entzieht die Freigabe; nur automatik-eigenes Licht wird ausgeschaltet.
 - `ApplyChanges()` sendet keinen Lichtbefehl.
+
+## Längere Aufenthalte / Grillabend (seit 0.3.5)
+
+`Person erkannt` ist ein Echtzeit-Human-Ereignisstatus, kein zuverlässiger
+Nachweis einer dauerhaften Anwesenheit: Wer still sitzt, kann ohne weitere
+SMD/IVS-Erkennung aus dem Kamerastatus verschwinden.
+
+**Neue individuelle Einstellung:** `StayQuietSeconds` – Licht-Aufenthaltsschutz,
+in Sekunden, 0 bis 21600; Standard 0 = bestehendes Verhalten unverändert.
+Für **JV Terrasse** empfehlen sich **3600 Sekunden (eine Stunde)**. Jede neue,
+zugeordnete Human-Meldung verlängert die Ruhezeit. Die alte Nachlaufzeit
+`AfterRunSeconds` bleibt separat bestehen. Der spätere der beiden Zeitpunkte
+entscheidet über das nächtliche Abschalten; der Human-Status selbst wird durch
+diesen Licht-Aufenthaltsschutz **nicht künstlich auf AN gehalten**.
+
+Bei AUS wird der wirkliche Dahua-Eventstream auf Aktualität geprüft (HTTP 200,
+Parent Socket 102 und letzte empfangene Daten maximal 25 Sekunden alt).
+Im Fehlerfall wartet die Automatik zunächst und der vorhandene Watchdog kann
+die Verbindung erneut aufbauen. Die weitere Schonfrist beträgt – aus
+Instanzwerten abgeleitet – mindestens 60, höchstens 900 Sekunden. Bleibt die
+Kamera dauerhaft nicht verifizierbar, darf nach der Schonfrist ausgeschaltet
+werden, damit das Licht nicht unbegrenzt AN bleibt. Ein neu gestarteter
+Stream allein ist **keine** Bestätigung für eine leere Terrasse.
+
+**Manuelles AUS** während der Ruhephase sperrt ein sofortiges Wieder-EIN durch
+eine neue Personenerkennung. Sonnenaufgang schaltet auto-eigenes Licht
+weiterhin unabhängig vom Aufenthaltsschutz aus. Reine Personenerkennungs-
+Instanzen ohne Lichtsteuerung schalten kein Licht.
+
+Im vorhandenen Debug/State werden `LastHumanActivity` und Alter,
+`QuietHoldUntil`, `CameraStreamHealthy`, `OffValidationSince` und die
+konfigurierte `StayQuietSeconds`-Zeit ausgegeben, ohne zusätzliche sichtbare
+Symcon-Variablen.
+
+**Grenze:** Vollständig regungslos sitzende Personen kann eine
+bewegungsbasierte Kamera nicht sicher nachweisen. Eine bewusst manuell
+eingeschaltete Dauerbeleuchtung ist die verlässlichste Wahl, wenn auch nach
+einer Stunde völliger Ruhe keine Abschaltung stattfinden darf.
 
 ## Nachlauf
 
