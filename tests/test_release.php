@@ -46,7 +46,8 @@ foreach ([
     "private function isCameraStreamHealthy(int \$now): bool",
     "OffRemainingSeconds",
     "private function renewLightFromHumanEvent(): void",
-    "LastHumanActivity"
+    "LastHumanActivity",
+    "RegisterAttributeBoolean('ClassicMotionMigrated', false)"
 ] as $needle) {
     if (!str_contains($source, $needle)) {
         failRelease('Release-Code fehlt: ' . $needle);
