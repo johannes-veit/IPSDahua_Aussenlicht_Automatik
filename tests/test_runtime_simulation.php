@@ -703,10 +703,11 @@ assertSim($m23->ReadAttributeInteger('OffDue') >= time() + 899,
 // nach echter abgelaufener Frist wird NICHT unnötig reconnectet.
 $m23->WriteAttributeInteger('OffDue', time() - 1);
 $m23->WriteAttributeInteger('LastHumanActivity', time() - 950);
+$restartStageBeforeOff = $m23->ReadAttributeInteger('SocketRestartStage');
 $m23->OffTimer();
 assertSim(count($GLOBALS['simActions']) === 2 && end($GLOBALS['simActions'])[1] === false,
     'Bei abgelaufener Frist und gesundem Stream genau ein AUS');
-assertSim($m23->ReadAttributeInteger('SocketRestartStage') === 0,
-    'Kein vorsorglicher Kamera-Reconnect bei gesundem Eventstream');
+assertSim($m23->ReadAttributeInteger('SocketRestartStage') === $restartStageBeforeOff,
+    'Gesunder Stream darf durch AUS-Vorabprüfung keinen ZUSÄTZLICHEN Reconnect auslösen');
 
 echo "OK: vollständige Laufzeitsimulation Licht/Person/Nacht/Manual/Config bestanden\n";
