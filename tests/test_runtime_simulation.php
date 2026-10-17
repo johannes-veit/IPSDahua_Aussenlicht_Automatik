@@ -690,4 +690,29 @@ assertSim(($state['LastHumanActivityAge'] ?? 0) >= 180
     && !array_key_exists('QuietHoldUntil', $state),
     'Nur die tatsächliche Bewegung und die individuelle Nachlaufzeit diagnostizieren');
 
+// 33) Migration aus v0.3.6 mit einstündigem StayQuiet-Ausschalttermin.
+// Nach dem Update darf die alte zusätzliche Stunde nicht erhalten bleiben.
+$m24 = makeModule(true);
+resetActions(true, 100);
+$m24->props['AfterRunSeconds'] = 45;
+$m24->WriteAttributeBoolean('AutoOwned', true);
+$m24->WriteAttributeBoolean('ClassicMotionMigrated', false);
+$m24->WriteAttributeInteger('LastLightFeedback', 1);
+$m24->WriteAttributeInteger('LastHumanActivity', time() - 10);
+$m24->WriteAttributeInteger('OffDue', time() + 3600);
+$m24->ApplyChanges();
+assertSim($m24->ReadAttributeBoolean('ClassicMotionMigrated'),
+    'Einmalige Altlast-Migration muss als durchgeführt markiert werden');
+assertSim($m24->ReadAttributeInteger('OffDue') <= time() + 36,
+    'Alte einstündige Aufenthaltsschutz-Frist muss auf individuelle 45-s-Erkennung korrigiert werden');
+assertSim($m24->ReadAttributeBoolean('AutoOwned'),
+    'Migrationskorrektur darf automatisches Eigentum nicht ungewollt verlieren');
+
+// 34) Bereits migrierte Instanzen dürfen bei normalem Speichern
+// keine weitere einmalige Eingrenzung erfahren.
+$m24->WriteAttributeInteger('OffDue', time() + 90);
+$m24->ApplyChanges();
+assertSim($m24->ReadAttributeInteger('OffDue') >= time() + 89,
+    'Wiederholtes Speichern darf eine bereits migrierte Instanz nicht kürzen');
+
 echo "OK: vollständige Laufzeitsimulation Licht/Person/Nacht/Manual/Config bestanden\n";
