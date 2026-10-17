@@ -40,7 +40,7 @@ foreach ([
     "private function clearSelfCommand(): void",
     "private function expireStaleHumanSignals(int \$now): void",
     "getConfiguredPersonTimeoutSeconds()",
-    "ReadPropertyInteger(\'AfterRunSeconds\')"
+    "ReadPropertyInteger('AfterRunSeconds')"
 ] as $needle) {
     if (!str_contains($source, $needle)) {
         failRelease('Release-Code fehlt: ' . $needle);
