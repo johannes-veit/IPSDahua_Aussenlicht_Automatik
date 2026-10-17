@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.7 – 2026-10-17
+
+- Aufenthaltsschutz vollständig aus Modul, Konfigurationsformular, State-Diagnose und Schaltlogik entfernt (kein `StayQuietSeconds`, `QuietHoldUntil`, `ManualQuietLockUntil`)
+- Verhalten wie ein klassischer Bewegungsmelder: pro Kamera nur `AfterRunSeconds`; jeder echte Human-START/PULSE startet exakt diese Zeit neu, auch wenn `Person erkannt` bereits AN ist
+- STOP beendet den Human-Zustand, verlängert die Frist jedoch ausdrücklich nicht; Kamera-Heartbeat zählt ebenfalls nicht als Bewegung
+- Verlorenes Human-STOP wird nach dem individuell eingestellten Timeout bereinigt, ohne anschließend einen zweiten vollen Nachlauf zu starten
+- OffTimer berücksichtigt weiterhin den gespeicherten absoluten Ausschalttermin; vor AUS werden Human-Status, Kamerastream und echte LCN-Intensity geprüft
+- Sonnenaufgang und manuelle GT8-/LCN-Übersteuerung bleiben erhalten; keine neuen sichtbaren Symcon-Variablen, keine Kamera-/P03-Änderungen
+- bisherige Tests für Grillabend-Aufenthaltsschutz durch Simulationen für Einzelbewegung, wiederholten START/PULSE, STOP ohne Verlängerung, fehlendes STOP, Socketverlust und unterschiedliche Instanzzeiten ersetzt
+
+
 ## 0.3.6 – 2026-10-17
 
 - **Kritische Nachlaufkorrektur**: Der OffTimer prüft nun immer die absolut gespeicherte `OffDue`-Frist **und** die Ruhezeit aus `LastHumanActivity + StayQuietSeconds`; früher/alter Timer verkürzt keine der beiden Zeiten mehr.
