@@ -557,6 +557,7 @@ class AussenlichtAutomatik2 extends IPSModule
             'LightFeedbackRaw' => $this->getLightFeedbackRaw(),
             'LightFeedback' => $this->getLightFeedback(),
             'OffDue' => $this->ReadAttributeInteger('OffDue'),
+            'OffRemainingSeconds' => max(0, $this->ReadAttributeInteger('OffDue') - time()),
             'StayQuietSeconds' => $this->getStayQuietSeconds(),
             'LastHumanActivity' => $this->ReadAttributeInteger('LastHumanActivity'),
             'LastHumanActivityAge' => $this->ReadAttributeInteger('LastHumanActivity') > 0 ? max(0, time() - $this->ReadAttributeInteger('LastHumanActivity')) : null,
@@ -603,16 +604,25 @@ class AussenlichtAutomatik2 extends IPSModule
             return;
         }
 
-        // Für einen Grillabend zählt echte erneute Human-Aktivität. Bei kürzeren
-        // SMD-Pausen bleibt das automatik-eigene Licht durchgehend eingeschaltet.
-        // Nach Sonnenaufgang gilt diese Ruhezeit bewusst NICHT.
+        // Ein Symcon-Modultimer ist zyklisch; ein verfrühter/noch ausstehender
+        // Aufruf darf niemals die bereits zugesagte Nachlauf- oder Ruhezeit
+        // verkürzen. "OffDue" enthält den zuletzt vereinbarten Ausschalttermin.
+        // Das neueste echte Human-Ereignis darf ihn nur verlängern, nie verkürzen.
+        // Bei Sonnenaufgang hat die Nachtfreigabe Vorrang vor beiden Zeiten.
         $now = time();
-        $quietUntil = $this->getQuietHoldUntil();
-        if ($this->isNight() && $quietUntil > $now) {
-            $this->WriteAttributeInteger('OffDue', $quietUntil);
-            $this->SetTimerInterval('OffTimer', max(1000, ($quietUntil - $now) * 1000));
-            $this->debug('Licht', 'AUS verschoben: erneute Human-Aktivität; Ruhezeit bis ' . date('H:i:s', $quietUntil));
-            return;
+        $night = $this->isNight();
+        if ($night) {
+            $offDue = $this->ReadAttributeInteger('OffDue');
+            $quietDue = $this->getQuietHoldUntil();
+            $earliestOff = max($offDue, $quietDue);
+            if ($earliestOff > $now) {
+                $this->WriteAttributeInteger('OffDue', $earliestOff);
+                $this->SetTimerInterval('OffTimer', max(1000, ($earliestOff - $now) * 1000));
+                if ($earliestOff > $offDue) {
+                    $this->debug('Licht', 'AUS verschoben durch echte Human-Aktivität bis ' . date('H:i:s', $earliestOff));
+                }
+                return;
+            }
         }
 
         $light = $this->getLightFeedback();

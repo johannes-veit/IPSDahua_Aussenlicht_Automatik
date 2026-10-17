@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.6 – 2026-10-17
+
+- **Kritische Nachlaufkorrektur**: Der OffTimer prüft nun immer die absolut gespeicherte `OffDue`-Frist **und** die Ruhezeit aus `LastHumanActivity + StayQuietSeconds`; früher/alter Timer verkürzt keine der beiden Zeiten mehr.
+- Jede neue echte Human-Meldung erneuert die Ruhezeit; Heartbeats/andere Socketdaten bleiben ausdrücklich davon ausgeschlossen.
+- Für den eigentlichen Status gilt unverändert: passendes Human-START/STOP, individueller STOP-Ausfallschutz, keine künstliche Dauer-Personenerkennung.
+- Bei gesundem Dahua-HTTP-Eventstream wird zur Ausschaltzeit **kein** vorsorglicher Kamera-Neustart ausgelöst. Bei unterbrochenem Stream wird der bestehende Watchdog genutzt; ein Reconnect beweist keine Abwesenheit.
+- `DumpState` enthält zusätzlich `OffRemainingSeconds`; keine neuen sichtbaren Symcon-Variablen, keine Änderungen an Kamera/LCN/P03.
+- Alte Simulationsaufrufe aktualisiert: Zeitablauf wird nun explizit simuliert, statt 15-/180-/3600-s-Timeouts sofort aufzurufen.
+- Regressionen für zu frühen Timer, neue Human-Meldung während altem Timer, Nachlauf länger als Aufenthaltsschutz und gesunden Stream ergänzt.
+
+
 ## 0.3.5 – 2026-10-17
 
 - neuer optionaler Aufenthaltsschutz pro Kamera über `StayQuietSeconds` (0 bis 21600 s, Default 0 = bisheriges Verhalten); Terrasse/Grillabend: 3600 s empfohlen

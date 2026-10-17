@@ -184,6 +184,8 @@ assertSim($m->ReadAttributeBoolean('AutoOwned'), 'echte Intensity=EIN darf Eigen
 event($m, 'Stop');
 assertSim(($m->timers['OffTimer'] ?? 0) === 180000, 'STOP muss 180-s-Nachlauf starten');
 
+// Zeitpunkt gezielt vorspulen: kein reales Warten nötig.
+$m->WriteAttributeInteger('OffDue', time() - 1);
 // Ablauf simulieren: erster AUS-Request toggelt Hardware korrekt AUS, Feedback bleibt absichtlich verzögert EIN.
 $m->OffTimer();
 assertSim(count($GLOBALS['simActions']) === 2 && $GLOBALS['simActions'][1][1] === false, 'Nachlauf muss genau einen AUS-Befehl senden');
@@ -300,6 +302,7 @@ resetActions(false, 0);
 event($m4, 'Start');
 feedback($m4, 100);
 event($m4, 'Stop');
+$m4->WriteAttributeInteger('OffDue', time() - 1);
 $m4->OffTimer();
 assertSim($m4->ReadAttributeInteger('SelfCommandTarget') === 0, 'AUS muss als Pending-Ziel geführt werden');
 // Rückmeldung bleibt absichtlich EIN; neue Person kommt vor Bestätigung.
@@ -313,10 +316,12 @@ resetActions(true, 100);
 $m5->WriteAttributeBoolean('AutoOwned', true);
 $m5->WriteAttributeBoolean('PersonActive', false);
 $GLOBALS['simActionMode'] = 'fail';
+$m5->WriteAttributeInteger('OffDue', time() - 1);
 $m5->OffTimer();
 assertSim(count($GLOBALS['simActions']) === 1, 'fehlgeschlagenes AUS muss einen Versuch protokollieren');
 assertSim($m5->ReadAttributeInteger('SelfCommandTarget') === -1, 'fehlgeschlagener RequestAction muss Pending-Ziel löschen');
 $GLOBALS['simActionMode'] = 'toggle';
+$m5->WriteAttributeInteger('OffDue', time() - 1); // 15-s-Recheck ist abgelaufen
 $m5->OffTimer();
 assertSim(count($GLOBALS['simActions']) === 2, 'nach echtem RequestAction-Fehler muss kontrollierter neuer Versuch möglich sein');
 assertSim($GLOBALS['simHardwareLight'] === false, 'zweiter erfolgreicher AUS-Versuch muss Hardware ausschalten');
@@ -360,6 +365,8 @@ assertSim($m7->ReadAttributeString('ActiveHumanEvents') === '[]' || $m7->ReadAtt
     'Verwaister START muss aus internem Event-Tracker verschwinden');
 assertSim(($m7->timers['OffTimer'] ?? 0) === 180000, 'Zeitablauf muss normalen Lichtnachlauf setzen');
 assertSim(count($GLOBALS['simActions']) === 1, 'Watchdog darf nicht unmittelbar das Licht AUS toggeln');
+// Nachlauf ist im Test abgelaufen; der frühe Timer-Test ist separat.
+$m7->WriteAttributeInteger('OffDue', time() - 1);
 $m7->OffTimer();
 assertSim(count($GLOBALS['simActions']) === 2 && end($GLOBALS['simActions'])[1] === false,
     'Nachlauf muss genau ein AUS anfordern');
@@ -554,6 +561,7 @@ assertSim(($m16->timers['OffTimer'] ?? 0) === 3600000,
 
 // 24) Ablauf der gesamten Ruhezeit: exakt ein AUS, mit echter Kamera-Heartbeat-Prüfung.
 $m16->WriteAttributeInteger('LastHumanActivity', time() - 3601);
+$m16->WriteAttributeInteger('OffDue', time() - 1);
 $m16->WriteAttributeInteger('LastCameraRx', time());
 $m16->OffTimer();
 assertSim(count($GLOBALS['simActions']) === 2 && end($GLOBALS['simActions'])[1] === false,
@@ -573,6 +581,7 @@ event($m17, 'Start');
 feedback($m17, 100);
 event($m17, 'Stop');
 $m17->WriteAttributeInteger('LastHumanActivity', time() - 901);
+$m17->WriteAttributeInteger('OffDue', time() - 1);
 $m17->WriteAttributeInteger('LastCameraRx', time() - 90);
 $m17->OffTimer();
 assertSim(count($GLOBALS['simActions']) === 1,
@@ -583,6 +592,7 @@ assertSim(($m17->timers['OffTimer'] ?? 0) === 15000,
     'Vor-AUS-Verbindungsprüfung muss nach 15 Sekunden erneut laufen');
 // Verbindung kommt zurück: AUS erst nach frischem HTTP-Stream/Heartbeat.
 $m17->WriteAttributeInteger('LastCameraRx', time());
+$m17->WriteAttributeInteger('OffDue', time() - 1); // Recheck-Zeit ist abgelaufen
 $m17->OffTimer();
 assertSim(count($GLOBALS['simActions']) === 2 && end($GLOBALS['simActions'])[1] === false,
     'Nach erfolgreicher Revalidierung darf Licht AUS gehen');
@@ -594,6 +604,7 @@ event($m18, 'Start');
 feedback($m18, 100);
 event($m18, 'Stop');
 $m18->WriteAttributeInteger('LastCameraRx', time() - 90);
+$m18->WriteAttributeInteger('OffDue', time() - 1);
 $m18->WriteAttributeInteger('OffValidationSince', time() - 901);
 $m18->OffTimer();
 assertSim(count($GLOBALS['simActions']) === 2 && end($GLOBALS['simActions'])[1] === false,
@@ -635,5 +646,68 @@ $GLOBALS['simVars'][2]['value'] = $now + 3600;
 $m20->MessageSink(time(), 1, 10603, [$GLOBALS['simVars'][1]['value'], true, 0]);
 assertSim(count($GLOBALS['simActions']) === 2 && end($GLOBALS['simActions'])[1] === false,
     'Sonnenaufgang muss ohne Warten auf Aufenthaltsschutz AUS anfordern');
+
+
+ // 29) Wirklicher Timer-Frühaufruf darf den Nachlauf nicht abkürzen.
+$m21 = makeModule(true);
+resetActions(false, 0);
+event($m21, 'Start');
+feedback($m21, 100);
+event($m21, 'Stop');
+$deadline = $m21->ReadAttributeInteger('OffDue');
+assertSim($deadline >= time() + 179, 'Nachlauf muss als absoluter Zeitpunkt gespeichert werden');
+$m21->OffTimer();
+assertSim(count($GLOBALS['simActions']) === 1, 'Früher OffTimer darf Licht nicht AUS schalten');
+assertSim($m21->ReadAttributeInteger('OffDue') === $deadline,
+    'Früher OffTimer darf Nachlauf-Ende nicht verschieben');
+assertSim(($m21->timers['OffTimer'] ?? 0) >= 178000, 'Restlaufzeit muss wieder aktiviert werden');
+
+// 30) Wenn neue Human-Aktivität das Ruhefenster verlängert, darf selbst
+// der abgelaufene ALTE Timer kein AUS anfordern.
+$m22 = makeModule(true);
+$m22->props['StayQuietSeconds'] = 600;
+$m22->ApplyChanges();
+$m22->WriteAttributeBoolean('Streaming', true);
+$m22->WriteAttributeInteger('LastCameraRx', time());
+resetActions(false, 0);
+event($m22, 'Start');
+feedback($m22, 100);
+event($m22, 'Stop');
+$m22->WriteAttributeInteger('OffDue', time() - 1); // veralteter Timer
+event($m22, 'Start');
+event($m22, 'Stop');
+$m22->OffTimer();
+assertSim(count($GLOBALS['simActions']) === 1, 'Neue Human-Aktivität muss AUS verhindern');
+assertSim($m22->ReadAttributeInteger('OffDue') >= time() + 599,
+    'Neue Human-Aktivität muss absoluten Ausschaltzeitpunkt verlängern');
+
+// 31) Nachlauf 900 s und Aufenthaltsschutz 120 s: nur der SPÄTERE
+// Zeitpunkt zählt. Der rohe Status darf trotzdem STOP -> AUS anzeigen.
+$m23 = makeModule(true);
+$m23->props['AfterRunSeconds'] = 900;
+$m23->props['StayQuietSeconds'] = 120;
+$m23->ApplyChanges();
+$m23->WriteAttributeBoolean('Streaming', true);
+$m23->WriteAttributeInteger('LastCameraRx', time());
+resetActions(false, 0);
+event($m23, 'Start');
+feedback($m23, 100);
+event($m23, 'Stop');
+$m23->OffTimer();
+assertSim(count($GLOBALS['simActions']) === 1,
+    '900-s-Nachlauf darf nicht durch kürzeren 120-s-Stay-Guard abgekürzt werden');
+assertSim($m23->ReadAttributeInteger('OffDue') >= time() + 899,
+    'Spätere Frist muss erhalten bleiben');
+
+// 32) Gesundes Dahua-Heartbeat ist kein Nachweis für Personen;
+// nach echter abgelaufener Frist wird NICHT unnötig reconnectet.
+$m23->WriteAttributeInteger('OffDue', time() - 1);
+$m23->WriteAttributeInteger('LastHumanActivity', time() - 950);
+$restartStageBeforeOff = $m23->ReadAttributeInteger('SocketRestartStage');
+$m23->OffTimer();
+assertSim(count($GLOBALS['simActions']) === 2 && end($GLOBALS['simActions'])[1] === false,
+    'Bei abgelaufener Frist und gesundem Stream genau ein AUS');
+assertSim($m23->ReadAttributeInteger('SocketRestartStage') === $restartStageBeforeOff,
+    'Gesunder Stream darf durch AUS-Vorabprüfung keinen ZUSÄTZLICHEN Reconnect auslösen');
 
 echo "OK: vollständige Laufzeitsimulation Licht/Person/Nacht/Manual/Config bestanden\n";
