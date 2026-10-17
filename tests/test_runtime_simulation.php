@@ -333,4 +333,109 @@ $GLOBALS['simVars'][2]['value'] = $now + 36000;
 $m6->MessageSink(time(), 2, 10603, [$GLOBALS['simVars'][2]['value'], true, 0]);
 assertSim(count($GLOBALS['simActions']) === 1 && $GLOBALS['simActions'][0][1] === true, 'aktive Person muss ab Sonnenuntergang Licht einschalten');
 
+
+// 13) Reale Regression: Human-STOP geht verloren, HTTP-Heartbeats laufen weiter.
+// Der Watchdog darf die Person nach 180 s nicht weiter als physisch anwesend
+// werten und muss den normalen 180-s-Lichtnachlauf starten, ohne sofort AUS.
+$m7 = makeModule(true);
+resetActions(false, 0);
+event($m7, 'Start');
+feedback($m7, 100);
+$human = json_decode($m7->ReadAttributeString('ActiveHumanEvents'), true);
+assertSim(count($human) === 1, 'START muss ein aktives Human-Event erzeugen');
+foreach ($human as &$entry) {
+    $entry['startedAt'] = time() - 181;
+}
+unset($entry);
+$m7->WriteAttributeString('ActiveHumanEvents', json_encode($human));
+$m7->WriteAttributeInteger('LastCameraRx', time()); // Heartbeat weiterhin aktuell
+$m7->Watchdog();
+assertSim(!$m7->ReadAttributeBoolean('PersonActive'), 'Watchdog muss festhängendes Human nach 180 s lösen');
+assertSim(!$GLOBALS['simVars'][$m7->GetIDForIdent('PersonDetected')]['value'], 'Sichtbare Person erkannt muss AUS werden');
+assertSim($m7->ReadAttributeString('ActiveHumanEvents') === '[]' || $m7->ReadAttributeString('ActiveHumanEvents') === '{}',
+    'Verwaister START muss aus internem Event-Tracker verschwinden');
+assertSim(($m7->timers['OffTimer'] ?? 0) === 180000, 'Zeitablauf muss normalen Lichtnachlauf setzen');
+assertSim(count($GLOBALS['simActions']) === 1, 'Watchdog darf nicht unmittelbar das Licht AUS toggeln');
+$m7->OffTimer();
+assertSim(count($GLOBALS['simActions']) === 2 && end($GLOBALS['simActions'])[1] === false,
+    'Nachlauf muss genau ein AUS anfordern');
+$m7->OffTimer();
+assertSim(count($GLOBALS['simActions']) === 2, 'Stale-START-Fix darf kein doppeltes Toggle-AUS auslösen');
+
+// 14) Zwei unabhängige Human-Ziele: nur das veraltete löschen.
+$m8 = makeModule(false);
+resetActions(false, 0);
+event($m8, 'Start');
+$human = json_decode($m8->ReadAttributeString('ActiveHumanEvents'), true);
+foreach ($human as &$entry) {
+    $entry['startedAt'] = time() - 181;
+}
+unset($entry);
+$human['crossline:0:eventid=44'] = [
+    'code' => 'CrossLineDetection', 'index' => 0, 'eventId' => 44,
+    'startedAt' => time() - 10
+];
+$m8->WriteAttributeString('ActiveHumanEvents', json_encode($human));
+$m8->WriteAttributeInteger('LastCameraRx', time());
+$m8->Watchdog();
+assertSim($m8->ReadAttributeBoolean('PersonActive'), 'Frisches paralleles Human darf nicht mit altem gelöscht werden');
+assertSim(count(json_decode($m8->ReadAttributeString('ActiveHumanEvents'), true)) === 1,
+    'Nur ein veralteter von zwei STARTs muss gelöscht werden');
+$human = json_decode($m8->ReadAttributeString('ActiveHumanEvents'), true);
+foreach ($human as &$entry) {
+    $entry['startedAt'] = time() - 181;
+}
+unset($entry);
+$m8->WriteAttributeString('ActiveHumanEvents', json_encode($human));
+$m8->Watchdog();
+assertSim(!$m8->ReadAttributeBoolean('PersonActive'), 'Letztes abgelaufenes Human muss den Status beenden');
+assertSim(count($GLOBALS['simActions']) === 0, 'Reine Erkennungsinstanz darf nie Licht schalten');
+
+// 15) Erneuter START derselben Regel verlängert die Erkennungsfrist.
+$m9 = makeModule(false);
+event($m9, 'Start');
+$human = json_decode($m9->ReadAttributeString('ActiveHumanEvents'), true);
+foreach ($human as &$entry) {
+    $entry['startedAt'] = time() - 175;
+}
+unset($entry);
+$m9->WriteAttributeString('ActiveHumanEvents', json_encode($human));
+event($m9, 'Start');
+$m9->Watchdog();
+assertSim($m9->ReadAttributeBoolean('PersonActive'), 'Erneuter START muss Status gültig halten');
+$human = json_decode($m9->ReadAttributeString('ActiveHumanEvents'), true);
+assertSim((time() - (int) reset($human)['startedAt']) < 10, 'Re-START muss Zeitstempel erneuern');
+
+// 16) Manuell eingeschaltetes Licht bleibt bei Stale-START unangetastet.
+$m10 = makeModule(true);
+resetActions(true, 100);
+event($m10, 'Start');
+assertSim(!$m10->ReadAttributeBoolean('AutoOwned'), 'Manuelles Licht wird nicht adoptiert');
+$human = json_decode($m10->ReadAttributeString('ActiveHumanEvents'), true);
+foreach ($human as &$entry) {
+    $entry['startedAt'] = time() - 181;
+}
+unset($entry);
+$m10->WriteAttributeString('ActiveHumanEvents', json_encode($human));
+$m10->Watchdog();
+assertSim(count($GLOBALS['simActions']) === 0, 'Watchdog darf fremdes/manuelles Licht nicht AUS schalten');
+assertSim(($m10->timers['OffTimer'] ?? 0) === 0, 'Manuelles Licht darf keinen OffTimer bekommen');
+
+// 17) Socket bereits als nicht-streamend markiert: ebenfalls kein eingefrorenes Human.
+$m11 = makeModule(false);
+event($m11, 'Start');
+$m11->WriteAttributeBoolean('Streaming', false);
+$GLOBALS['simInstances'][900]['InstanceStatus'] = 104;
+$m11->Watchdog();
+assertSim(!$m11->ReadAttributeBoolean('PersonActive'), 'Inaktiver Socket ohne Streaming muss Person zurücksetzen');
+$GLOBALS['simInstances'][900]['InstanceStatus'] = 102;
+
+// 18) Fehlt ein Pulse-Timer, befreit der Watchdog den PULSE-Zustand.
+$m12 = makeModule(false);
+$m12->WriteAttributeInteger('HumanPulseUntil', time() - 1);
+$m12->WriteAttributeBoolean('PersonActive', true);
+$m12->Watchdog();
+assertSim(!$m12->ReadAttributeBoolean('PersonActive') && $m12->ReadAttributeInteger('HumanPulseUntil') === 0,
+    'Abgelaufener PULSE darf auch ohne Timer nicht festhängen');
+
 echo "OK: vollständige Laufzeitsimulation Licht/Person/Nacht/Manual/Config bestanden\n";

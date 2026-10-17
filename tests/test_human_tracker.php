@@ -56,4 +56,38 @@ if ($active !== []) {
     failTracker('SmartMotionHuman START/STOP ohne IDs funktioniert nicht');
 }
 
+// Regression 0.3.3: verlorener STOP bei weiter aktiven HTTP-Heartbeats.
+$event = ev('SmartMotionHuman', 'Start', 0, true);
+$active = DahuaHumanTracker::apply([], $event, 100);
+if (count(DahuaHumanTracker::expireStale($active, 279, 180)) !== 1) {
+    failTracker('Gültiger START darf vor 180 s nicht verfallen');
+}
+if (DahuaHumanTracker::expireStale($active, 280, 180) !== []) {
+    failTracker('Verlorener STOP muss nach exakt 180 s verfallen');
+}
+
+// Wiederholter START erneuert nur seine eigene Frist.
+$active = DahuaHumanTracker::apply($active, $event, 260);
+if (count(DahuaHumanTracker::expireStale($active, 300, 180)) !== 1) {
+    failTracker('Wiederholter START muss Frist erneuern');
+}
+
+// Mehrere parallele Objekte: frische Ereignisse bleiben gültig.
+$active = DahuaHumanTracker::apply([], ev('CrossLineDetection', 'Start', 0, true, 111), 100);
+$active = DahuaHumanTracker::apply($active, ev('CrossLineDetection', 'Start', 0, true, 222), 275);
+$active = DahuaHumanTracker::expireStale($active, 300, 180);
+if (count($active) !== 1 || (reset($active)['eventId'] ?? null) !== 222) {
+    failTracker('Ein alter START darf kein frisches paralleles Human-Ereignis löschen');
+}
+
+// Ungültige Zeiten verhindern keine Wiederherstellung.
+$active = ['broken' => ['code' => 'SmartMotionHuman']];
+if (DahuaHumanTracker::expireStale($active, 300, 180) !== []) {
+    failTracker('Fehlender Zeitstempel muss aufgeräumt werden');
+}
+$active = ['future' => ['startedAt' => 999999]];
+if (DahuaHumanTracker::expireStale($active, 300, 180) !== []) {
+    failTracker('Ungültiger Zukunfts-Zeitstempel darf nicht hängen bleiben');
+}
+
 echo "OK: Human-Event-Tracker bestanden\n";

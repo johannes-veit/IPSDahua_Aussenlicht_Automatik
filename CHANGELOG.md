@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.3 – 2026-10-17
+
+- fix: verlorene Human-STOP-Ereignisse halten `Person erkannt` nicht mehr endlos auf AN, obwohl Dahua weiter HTTP-Heartbeats sendet
+- Watchdog (alle 15 s) verwirft nur START-Ereignisse ohne Erneuerung nach spätestens 180 s; erneuter START derselben Regel erneuert den Zeitstempel
+- parallele frische Human-Ereignisse bleiben aktiv; PULSE-Zustände werden zusätzlich bei ausgebliebenem Timer bereinigt
+- Socket-Neuverbindung, verlorener/ungültiger Socket oder gesperrte Anmeldung verwerfen alte Human-Zustände sicher
+- normale 180-s-Lichtnachlaufzeit nach dem letzten Ende bleibt bestehen; automatische AUS-Befehle nur für von der Automatik selbst eingeschaltete Lichter
+- keine zusätzlichen Symcon-Objekte, keine Änderungen an Kamera/IVS, manueller Steuerung oder P03-Observer
+- neue Runtime-Regressionen: lebende Heartbeats ohne STOP, parallele STARTs, erneute Erkennung, manuelles Licht, Socket-Ausfall und PULSE
+
+
 ## 0.3.2 – 2026-10-04
 
 - umfangreiche Laufzeitsimulation der v0.3.1 mit Person START/STOP, Nachlauf, verzögerter LCN-Intensity, manueller Übersteuerung, Sonnenaufgang und reinem Personenerkennungsmodus
