@@ -15,6 +15,8 @@ class AussenlichtAutomatik2 extends IPSModule
     private const IM_CHANGESTATUS_ID = 10505;
     private const LIGHT_CONFIRM_SECONDS = 60;
     private const LIGHT_RECHECK_SECONDS = 15;
+    // Heartbeats sind keine Human-Bestätigung. Verlorene STOPs verfallen separat.
+    private const HUMAN_EVENT_MAX_SECONDS = 180;
 
     public function Create(): void
     {
@@ -297,6 +299,10 @@ class AussenlichtAutomatik2 extends IPSModule
         }
 
         if ($status === 200) {
+            // Ein neuer Stream darf keine STARTs aus der vorherigen Verbindung erben.
+            if ($this->hasHumanTracking()) {
+                $this->clearHumanTracking('Neuer Dahua-Eventstream');
+            }
             $this->WriteAttributeBoolean('Streaming', true);
             $this->WriteAttributeBoolean('AuthPending', false);
             $this->WriteAttributeBoolean('AuthBlocked', false);
@@ -345,6 +351,9 @@ class AussenlichtAutomatik2 extends IPSModule
             }
 
             if ($status === 102 && $this->ReadPropertyBoolean('Enabled') && $this->cameraConfigurationReady()) {
+                if ($this->hasHumanTracking()) {
+                    $this->clearHumanTracking('Client Socket neu verbunden');
+                }
                 $this->WriteAttributeBoolean('Streaming', false);
                 $this->SetBuffer('HttpBuffer', '');
                 $this->SetBuffer('EventCarry', '');
@@ -356,7 +365,7 @@ class AussenlichtAutomatik2 extends IPSModule
             } elseif ($status !== 102) {
                 $wasStreaming = $this->ReadAttributeBoolean('Streaming');
                 $this->WriteAttributeBoolean('Streaming', false);
-                if ($wasStreaming) {
+                if ($wasStreaming || $this->hasHumanTracking()) {
                     $this->clearHumanTracking('Dahua-Stream getrennt');
                 }
             }
@@ -426,6 +435,9 @@ class AussenlichtAutomatik2 extends IPSModule
 
     public function Watchdog(): void
     {
+        // Verwaiste Human-Zustände zuerst bereinigen: auch bei laufendem Heartbeat.
+        $this->expireStaleHumanSignals(time());
+
         // Sonnenstatus zusätzlich zyklisch prüfen. Damit bleibt die Freigabe auch dann
         // korrekt, wenn ein Location-Control-Update oder ein Grenz-Timer verpasst wurde.
         if ($this->lightAutomationEnabled()) {
@@ -438,18 +450,24 @@ class AussenlichtAutomatik2 extends IPSModule
         }
 
         if (!$this->ReadPropertyBoolean('Enabled') || !$this->cameraConfigurationReady() || $this->ReadAttributeBoolean('AuthBlocked')) {
+            if ($this->hasHumanTracking()) {
+                $this->clearHumanTracking('Kamera deaktiviert / Anmeldung gesperrt / Konfiguration fehlt');
+            }
             return;
         }
 
         $parentID = $this->getParentID();
         if ($parentID <= 0 || !IPS_InstanceExists($parentID)) {
+            if ($this->hasHumanTracking()) {
+                $this->clearHumanTracking('Client Socket fehlt');
+            }
             return;
         }
 
         $instance = IPS_GetInstance($parentID);
         $now = time();
         if ((int) $instance['InstanceStatus'] !== 102) {
-            if ($this->ReadAttributeBoolean('Streaming')) {
+            if ($this->ReadAttributeBoolean('Streaming') || $this->hasHumanTracking()) {
                 $this->WriteAttributeBoolean('Streaming', false);
                 $this->clearHumanTracking('Client Socket nicht aktiv');
             }
@@ -529,6 +547,7 @@ class AussenlichtAutomatik2 extends IPSModule
             'LastCameraRx' => $this->ReadAttributeInteger('LastCameraRx'),
             'LastCameraRxAge' => $this->ReadAttributeInteger('LastCameraRx') > 0 ? max(0, time() - $this->ReadAttributeInteger('LastCameraRx')) : null,
             'ActiveHumanEvents' => $this->getActiveHumanEvents(),
+            'HumanEventMaxAgeSeconds' => self::HUMAN_EVENT_MAX_SECONDS,
             'HumanPulseUntil' => $this->ReadAttributeInteger('HumanPulseUntil'),
             'LastHumanEvent' => $this->ReadAttributeString('LastHumanEvent'),
             'ParentID' => $this->getParentID(),
@@ -766,6 +785,49 @@ class AussenlichtAutomatik2 extends IPSModule
             $this->WriteAttributeInteger('HumanPulseUntil', 0);
             $this->refreshPersonAggregate('PULSE abgelaufen');
         }
+    }
+
+    /**
+     * Fail-safe bei verlorenem Human-STOP trotz weiter laufender Dahua-Heartbeats.
+     * Nur die betroffenen STARTs werden entfernt; andere Human-Events bleiben
+     * erhalten. Nach dem letzten START endet die Erkennung mit normalem Nachlauf.
+     */
+    private function expireStaleHumanSignals(int $now): void
+    {
+        $active = $this->getActiveHumanEvents();
+        $fresh = DahuaHumanTracker::expireStale($active, $now, self::HUMAN_EVENT_MAX_SECONDS);
+        $removed = count($active) - count($fresh);
+
+        $pulseUntil = $this->ReadAttributeInteger('HumanPulseUntil');
+        $pulseExpired = $pulseUntil > 0 && $pulseUntil <= $now;
+
+        if ($removed > 0) {
+            $this->setActiveHumanEvents($fresh);
+        }
+        if ($pulseExpired) {
+            $this->WriteAttributeInteger('HumanPulseUntil', 0);
+            $this->SetTimerInterval('PersonStateTimer', 0);
+        }
+
+        $shouldBeActive = $fresh !== [] || ($pulseUntil > $now);
+        if ($removed > 0 || $pulseExpired) {
+            $this->debug('Watchdog', $removed . ' veraltete Human-START(s) nach '
+                . self::HUMAN_EVENT_MAX_SECONDS . ' s verworfen'
+                . ($pulseExpired ? '; PULSE abgelaufen' : '')
+                . '; verbleibende STARTs=' . count($fresh));
+        }
+
+        if ($removed > 0 || $pulseExpired
+            || $this->ReadAttributeBoolean('PersonActive') !== $shouldBeActive) {
+            $this->refreshPersonAggregate('WATCHDOG Human-Zustandsabgleich');
+        }
+    }
+
+    private function hasHumanTracking(): bool
+    {
+        return $this->ReadAttributeBoolean('PersonActive')
+            || $this->getActiveHumanEvents() !== []
+            || $this->ReadAttributeInteger('HumanPulseUntil') > 0;
     }
 
     private function refreshPersonAggregate(string $source): void
