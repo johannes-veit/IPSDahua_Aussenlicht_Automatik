@@ -321,6 +321,7 @@ $m5->OffTimer();
 assertSim(count($GLOBALS['simActions']) === 1, 'fehlgeschlagenes AUS muss einen Versuch protokollieren');
 assertSim($m5->ReadAttributeInteger('SelfCommandTarget') === -1, 'fehlgeschlagener RequestAction muss Pending-Ziel löschen');
 $GLOBALS['simActionMode'] = 'toggle';
+$m5->WriteAttributeInteger('OffDue', time() - 1); // 15-s-Recheck ist abgelaufen
 $m5->OffTimer();
 assertSim(count($GLOBALS['simActions']) === 2, 'nach echtem RequestAction-Fehler muss kontrollierter neuer Versuch möglich sein');
 assertSim($GLOBALS['simHardwareLight'] === false, 'zweiter erfolgreicher AUS-Versuch muss Hardware ausschalten');
@@ -591,6 +592,7 @@ assertSim(($m17->timers['OffTimer'] ?? 0) === 15000,
     'Vor-AUS-Verbindungsprüfung muss nach 15 Sekunden erneut laufen');
 // Verbindung kommt zurück: AUS erst nach frischem HTTP-Stream/Heartbeat.
 $m17->WriteAttributeInteger('LastCameraRx', time());
+$m17->WriteAttributeInteger('OffDue', time() - 1); // Recheck-Zeit ist abgelaufen
 $m17->OffTimer();
 assertSim(count($GLOBALS['simActions']) === 2 && end($GLOBALS['simActions'])[1] === false,
     'Nach erfolgreicher Revalidierung darf Licht AUS gehen');
