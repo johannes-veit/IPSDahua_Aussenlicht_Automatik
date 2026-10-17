@@ -438,4 +438,70 @@ $m12->Watchdog();
 assertSim(!$m12->ReadAttributeBoolean('PersonActive') && $m12->ReadAttributeInteger('HumanPulseUntil') === 0,
     'Abgelaufener PULSE darf auch ohne Timer nicht festhängen');
 
+
+// 19) Per-Instanz-Zeit statt global 180: kurze und lange Nachlauf-Konfiguration.
+// Ein aktiver START ohne STOP darf nur in der jeweiligen Kamera ablaufen.
+$m13 = makeModule(true);
+$m13->props['AfterRunSeconds'] = 45;
+$m13->ApplyChanges();
+$m13->WriteAttributeBoolean('Streaming', true);
+resetActions(false, 0);
+event($m13, 'Start');
+feedback($m13, 100);
+$entries = json_decode($m13->ReadAttributeString('ActiveHumanEvents'), true);
+foreach ($entries as &$entry) { $entry['startedAt'] = time() - 46; }
+unset($entry);
+$m13->WriteAttributeString('ActiveHumanEvents', json_encode($entries));
+$m13->Watchdog();
+assertSim(!$m13->ReadAttributeBoolean('PersonActive'),
+    'Kamera mit 45 s darf nicht starr 180 s warten');
+assertSim(($m13->timers['OffTimer'] ?? 0) === 45000,
+    'Nachlauf muss genau 45 s aus derselben Instanz übernehmen');
+assertSim(count($GLOBALS['simActions']) === 1,
+    'Der Zeitablauf darf nicht vorzeitig AUS toggeln');
+
+$m14 = makeModule(true);
+$m14->props['AfterRunSeconds'] = 600;
+$m14->ApplyChanges();
+$m14->WriteAttributeBoolean('Streaming', true);
+resetActions(false, 0);
+event($m14, 'Start');
+feedback($m14, 100);
+$entries = json_decode($m14->ReadAttributeString('ActiveHumanEvents'), true);
+foreach ($entries as &$entry) { $entry['startedAt'] = time() - 181; }
+unset($entry);
+$m14->WriteAttributeString('ActiveHumanEvents', json_encode($entries));
+$m14->Watchdog();
+assertSim($m14->ReadAttributeBoolean('PersonActive'),
+    'Kamera mit 600 s muss trotz 181 s weiterhin Person AN melden');
+assertSim(($m14->timers['OffTimer'] ?? 0) === 0,
+    'Kamera mit 600 s darf vor Timeout keinen Lichtnachlauf starten');
+$entries = json_decode($m14->ReadAttributeString('ActiveHumanEvents'), true);
+foreach ($entries as &$entry) { $entry['startedAt'] = time() - 601; }
+unset($entry);
+$m14->WriteAttributeString('ActiveHumanEvents', json_encode($entries));
+$m14->Watchdog();
+assertSim(!$m14->ReadAttributeBoolean('PersonActive'),
+    'Kamera mit 600 s muss nach individuellem Timeout auf AUS wechseln');
+assertSim(($m14->timers['OffTimer'] ?? 0) === 600000,
+    'Kamera mit 600 s muss eigenen Lichtnachlauf verwenden');
+
+// 20) Bei reiner Personenerkennung gilt derselbe individuelle Timeout,
+// ohne dass die Kamera jemals ein Licht schaltet.
+$m15 = makeModule(false);
+$m15->props['AfterRunSeconds'] = 25;
+$m15->ApplyChanges();
+$m15->WriteAttributeBoolean('Streaming', true);
+resetActions(false, 0);
+event($m15, 'Start');
+$entries = json_decode($m15->ReadAttributeString('ActiveHumanEvents'), true);
+foreach ($entries as &$entry) { $entry['startedAt'] = time() - 26; }
+unset($entry);
+$m15->WriteAttributeString('ActiveHumanEvents', json_encode($entries));
+$m15->Watchdog();
+assertSim(!$m15->ReadAttributeBoolean('PersonActive'),
+    'Reine Erkennung muss 25-s-Instanztimeout respektieren');
+assertSim(count($GLOBALS['simActions']) === 0,
+    'Reine Personenerkennung darf nach individuellem Timeout kein Licht schalten');
+
 echo "OK: vollständige Laufzeitsimulation Licht/Person/Nacht/Manual/Config bestanden\n";
