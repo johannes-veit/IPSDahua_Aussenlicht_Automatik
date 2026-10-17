@@ -52,6 +52,8 @@ class AussenlichtAutomatik2 extends IPSModule
         $this->RegisterAttributeInteger('OffDue', 0);
         $this->RegisterAttributeInteger('LastHumanActivity', 0);
         $this->RegisterAttributeInteger('OffValidationSince', 0);
+        // Einmalig: alte, möglicherweise stundenlange StayQuiet-Frist verwerfen.
+        $this->RegisterAttributeBoolean('ClassicMotionMigrated', false);
         $this->RegisterAttributeInteger('LastCameraRx', 0);
         $this->RegisterAttributeInteger('LastHttpRequest', 0);
         $this->RegisterAttributeBoolean('Streaming', false);
@@ -119,6 +121,27 @@ class AussenlichtAutomatik2 extends IPSModule
                 $timestamp = (int) ($legacy['time'] ?? 0);
                 if ($timestamp > 0 && $timestamp <= time()) {
                     $this->WriteAttributeInteger('LastHumanActivity', $timestamp);
+                }
+            }
+        }
+
+        // Beim ersten Update aus 0.3.5/0.3.6 könnte OffDue noch eine
+        // einstündige Aufenthaltsfrist enthalten. Diese Altfrist einmalig
+        // auf letzte echte Bewegung + individuell konfigurierte Nachlaufzeit
+        // reduzieren. Danach nie wieder ein bestehendes Fälligkeitsfenster
+        // als "Migration" verändern.
+        if (!$this->ReadAttributeBoolean('ClassicMotionMigrated')) {
+            $this->WriteAttributeBoolean('ClassicMotionMigrated', true);
+            if ($this->ReadAttributeBoolean('AutoOwned')) {
+                $last = $this->ReadAttributeInteger('LastHumanActivity');
+                $now = time();
+                $due = ($last > 0 && $last <= $now)
+                    ? max($now + 1, $last + $this->getConfiguredPersonTimeoutSeconds())
+                    : $now + $this->getConfiguredPersonTimeoutSeconds();
+                if ($this->ReadAttributeInteger('OffDue') > $due) {
+                    $this->WriteAttributeInteger('OffDue', $due);
+                    $this->debug('Licht', 'Einmalige Migration: alte Aufenthaltsschutz-Frist '
+                        . 'auf individuellen Bewegungsmelder-Nachlauf verkürzt');
                 }
             }
         }
