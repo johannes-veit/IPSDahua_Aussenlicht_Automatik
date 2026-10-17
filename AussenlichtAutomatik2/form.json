@@ -94,9 +94,13 @@
         {
           "type": "NumberSpinner",
           "name": "AfterRunSeconds",
-          "caption": "Nachlauf nach Ende der Personenerkennung (Sekunden)",
+          "caption": "Zeit je Kamera: Licht-Nachlauf / verlorener Human-STOP (Sekunden)",
           "minimum": 10,
           "maximum": 3600
+        },
+        {
+          "type": "Label",
+          "caption": "Jede Instanz nutzt ihren eigenen Wert: fehlendes STOP beendet Person erkannt nach dieser Zeit (Watchdog max. 15 s später); der Lichtnachlauf beginnt erst danach. Eine reguläre STOP-Meldung beendet Person erkannt sofort."
         },
         {
           "type": "Label",
