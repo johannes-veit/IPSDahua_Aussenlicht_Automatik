@@ -599,6 +599,19 @@ class AussenlichtAutomatik2 extends IPSModule
         }
         if (!$this->ReadAttributeBoolean('AutoOwned')) {
             $this->WriteAttributeInteger('OffDue', 0);
+            $this->WriteAttributeInteger('OffValidationSince', 0);
+            return;
+        }
+
+        // Für einen Grillabend zählt echte erneute Human-Aktivität. Bei kürzeren
+        // SMD-Pausen bleibt das automatik-eigene Licht durchgehend eingeschaltet.
+        // Nach Sonnenaufgang gilt diese Ruhezeit bewusst NICHT.
+        $now = time();
+        $quietUntil = $this->getQuietHoldUntil();
+        if ($this->isNight() && $quietUntil > $now) {
+            $this->WriteAttributeInteger('OffDue', $quietUntil);
+            $this->SetTimerInterval('OffTimer', max(1000, ($quietUntil - $now) * 1000));
+            $this->debug('Licht', 'AUS verschoben: erneute Human-Aktivität; Ruhezeit bis ' . date('H:i:s', $quietUntil));
             return;
         }
 
@@ -620,6 +633,32 @@ class AussenlichtAutomatik2 extends IPSModule
             $this->SetTimerInterval('OffTimer', self::LIGHT_RECHECK_SECONDS * 1000);
             $this->debug('Licht', 'AUS wartet: echte LCN-Intensity momentan nicht verfügbar; erneute Prüfung in 15 s');
             return;
+        }
+
+        // Vor dem AUS muss der echte Kamera-Eventstream aktuell sein. Ein bloßes
+        // "Person erkannt = AUS" oder ein alter Variablen-Zeitstempel reicht nicht.
+        // Bei Kamera-/Socketfehlern bekommt der bestehende Watchdog Zeit zum
+        // Wiederverbinden. Ein dauerhaft defekter Stream erzeugt aber nicht
+        // unbegrenzt Dauerlicht.
+        if ($this->isNight() && !$this->isCameraStreamHealthy($now)) {
+            $since = $this->ReadAttributeInteger('OffValidationSince');
+            if ($since <= 0 || $since > $now) {
+                $since = $now;
+                $this->WriteAttributeInteger('OffValidationSince', $since);
+            }
+            $grace = $this->getOfflineValidationGraceSeconds();
+            if (($now - $since) < $grace) {
+                $this->WriteAttributeInteger('OffDue', $now + self::LIGHT_RECHECK_SECONDS);
+                $this->SetTimerInterval('OffTimer', self::LIGHT_RECHECK_SECONDS * 1000);
+                $this->debug('Licht', 'AUS aufgeschoben: Kamera-Eventstream nicht aktuell; '
+                    . 'Watchdog prüft/repariert Verbindung, max. Schonzeit ' . $grace . ' s');
+                return;
+            }
+            $this->debug('Licht', 'Kamera seit ' . ($now - $since)
+                . ' s nicht verifizierbar; Schonzeit abgelaufen. '
+                . 'Automatik-eigenes Licht wird nach abgelaufener Ruhezeit ausgeschaltet.');
+        } else {
+            $this->WriteAttributeInteger('OffValidationSince', 0);
         }
 
         // Das Licht ist laut echter Rückmeldung weiterhin EIN. AUS anfordern.
@@ -1242,7 +1281,17 @@ class AussenlichtAutomatik2 extends IPSModule
         // fremdes/manuelles Licht und darf später nicht von der Automatik ausgeschaltet werden.
         $this->WriteAttributeBoolean('AutoOwned', false);
         $this->WriteAttributeInteger('OffDue', 0);
+        $this->WriteAttributeInteger('OffValidationSince', 0);
         $this->SetTimerInterval('OffTimer', 0);
+
+        // GT8/manuelles AUS bleibt auch zwischen zwei Human-Impulsen vorrangig.
+        // Während der zuletzt bestätigten Aufenthaltsruhezeit blockieren wir
+        // erneutes automatisches EIN bis maximal zu deren Länge ab jetzt.
+        if (!$light && $this->getQuietHoldUntil() > time()) {
+            $lockUntil = time() + max($this->getConfiguredPersonTimeoutSeconds(), $this->getStayQuietSeconds());
+            $this->WriteAttributeInteger('ManualQuietLockUntil', $lockUntil);
+            $this->debug('Licht', 'Manuelles AUS während Aufenthalt: Automatik-EIN gesperrt bis ' . date('H:i:s', $lockUntil));
+        }
 
         if (!$light && $this->ReadAttributeBoolean('PersonActive')) {
             // Benutzer hat trotz laufender Personenerkennung ausgeschaltet.
