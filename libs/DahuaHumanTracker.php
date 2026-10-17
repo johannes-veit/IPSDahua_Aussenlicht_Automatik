@@ -33,6 +33,28 @@ final class DahuaHumanTracker
     }
 
     /**
+     * Entfernt Human-STARTs ohne rechtzeitigen passenden STOP. Ein erneuter
+     * START derselben Erkennung aktualisiert startedAt und verlängert das Fenster.
+     * Heartbeats allein verlängern dieses Fenster ausdrücklich nicht.
+     *
+     * @param array<string,array<string,mixed>> $active
+     * @return array<string,array<string,mixed>>
+     */
+    public static function expireStale(array $active, int $now, int $maxAgeSeconds): array
+    {
+        $maxAgeSeconds = max(1, $maxAgeSeconds);
+        foreach ($active as $key => $entry) {
+            $startedAt = (int) ($entry['startedAt'] ?? 0);
+            // Fehlende/ungültige oder in die Zukunft verschobene Zeitstempel
+            // dürfen niemals einen dauerhaften EIN-Zustand verursachen.
+            if ($startedAt <= 0 || $startedAt > $now || ($now - $startedAt) >= $maxAgeSeconds) {
+                unset($active[$key]);
+            }
+        }
+        return $active;
+    }
+
+    /**
      * @param array<string,mixed> $event
      */
     public static function makeKey(array $event): string
