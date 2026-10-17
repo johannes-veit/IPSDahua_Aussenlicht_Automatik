@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.4 – 2026-10-17
+
+- pro-Kamera-Einstellung statt starrer 180-s-Grenze: der Human-START-Ausfallschutz liest `AfterRunSeconds` der jeweiligen AussenlichtAutomatik2-Instanz
+- der bereits individuell konfigurierte Lichtnachlauf bleibt unverändert; beide Zeitfenster verwenden denselben Instanzwert, Mindestwert 10 Sekunden
+- normale Human-STOPs beenden weiterhin sofort die Personenerkennung; bei fehlendem STOP beginnt nach dem instanzabhängigen Zeitfenster der normale Lichtnachlauf
+- im Debug wird die tatsächlich verwendete instanzabhängige HumanEventMaxAgeSeconds angezeigt
+- Formular macht die Doppelnutzung der Einstellung transparent, auch für reine Personenerkennung ohne Lichtsteuerung
+- Runtime-Tests prüfen unabhängig 25 s / 45 s / 600 s sowie die dazugehörigen Lichtnachläufe
+
+
 ## 0.3.3 – 2026-10-17
 
 - fix: verlorene Human-STOP-Ereignisse halten `Person erkannt` nicht mehr endlos auf AN, obwohl Dahua weiter HTTP-Heartbeats sendet

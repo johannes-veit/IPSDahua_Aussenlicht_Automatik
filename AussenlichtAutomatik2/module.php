@@ -15,8 +15,6 @@ class AussenlichtAutomatik2 extends IPSModule
     private const IM_CHANGESTATUS_ID = 10505;
     private const LIGHT_CONFIRM_SECONDS = 60;
     private const LIGHT_RECHECK_SECONDS = 15;
-    // Heartbeats sind keine Human-Bestätigung. Verlorene STOPs verfallen separat.
-    private const HUMAN_EVENT_MAX_SECONDS = 180;
 
     public function Create(): void
     {
@@ -547,7 +545,7 @@ class AussenlichtAutomatik2 extends IPSModule
             'LastCameraRx' => $this->ReadAttributeInteger('LastCameraRx'),
             'LastCameraRxAge' => $this->ReadAttributeInteger('LastCameraRx') > 0 ? max(0, time() - $this->ReadAttributeInteger('LastCameraRx')) : null,
             'ActiveHumanEvents' => $this->getActiveHumanEvents(),
-            'HumanEventMaxAgeSeconds' => self::HUMAN_EVENT_MAX_SECONDS,
+            'HumanEventMaxAgeSeconds' => $this->getConfiguredPersonTimeoutSeconds(),
             'HumanPulseUntil' => $this->ReadAttributeInteger('HumanPulseUntil'),
             'LastHumanEvent' => $this->ReadAttributeString('LastHumanEvent'),
             'ParentID' => $this->getParentID(),
@@ -794,8 +792,11 @@ class AussenlichtAutomatik2 extends IPSModule
      */
     private function expireStaleHumanSignals(int $now): void
     {
+        // Jede Kamera-Instanz verwendet ihre eigene konfigurierte Zeit.
+        // 180 Sekunden ist ausschließlich der Default bei einer neuen Instanz.
+        $timeoutSeconds = $this->getConfiguredPersonTimeoutSeconds();
         $active = $this->getActiveHumanEvents();
-        $fresh = DahuaHumanTracker::expireStale($active, $now, self::HUMAN_EVENT_MAX_SECONDS);
+        $fresh = DahuaHumanTracker::expireStale($active, $now, $timeoutSeconds);
         $removed = count($active) - count($fresh);
 
         $pulseUntil = $this->ReadAttributeInteger('HumanPulseUntil');
@@ -812,7 +813,7 @@ class AussenlichtAutomatik2 extends IPSModule
         $shouldBeActive = $fresh !== [] || ($pulseUntil > $now);
         if ($removed > 0 || $pulseExpired) {
             $this->debug('Watchdog', $removed . ' veraltete Human-START(s) nach '
-                . self::HUMAN_EVENT_MAX_SECONDS . ' s verworfen'
+                . $timeoutSeconds . ' s verworfen'
                 . ($pulseExpired ? '; PULSE abgelaufen' : '')
                 . '; verbleibende STARTs=' . count($fresh));
         }
@@ -821,6 +822,15 @@ class AussenlichtAutomatik2 extends IPSModule
             || $this->ReadAttributeBoolean('PersonActive') !== $shouldBeActive) {
             $this->refreshPersonAggregate('WATCHDOG Human-Zustandsabgleich');
         }
+    }
+
+    /**
+     * Pro-Instanz-Zeitquelle: Nachlauf (AfterRunSeconds).
+     * Minimum identisch mit der bisherigen Lichtnachlauf-Prüfung (10 s).
+     */
+    private function getConfiguredPersonTimeoutSeconds(): int
+    {
+        return max(10, $this->ReadPropertyInteger('AfterRunSeconds'));
     }
 
     private function hasHumanTracking(): bool
@@ -966,7 +976,7 @@ class AussenlichtAutomatik2 extends IPSModule
             return;
         }
 
-        $seconds = max(10, $this->ReadPropertyInteger('AfterRunSeconds'));
+        $seconds = $this->getConfiguredPersonTimeoutSeconds();
         $this->WriteAttributeInteger('OffDue', time() + $seconds);
         $this->SetTimerInterval('OffTimer', $seconds * 1000);
         $this->debug('Licht', 'Nachlauf gestartet: ' . $seconds . ' s');
@@ -1009,7 +1019,7 @@ class AussenlichtAutomatik2 extends IPSModule
         if ($due <= 0) {
             // Sicherheitsnetz nach Neustart/Update: Automatik-Eigentum darf nie ohne
             // Ausschaltzeitpunkt bestehen, wenn keine Person mehr aktiv ist.
-            $seconds = max(10, $this->ReadPropertyInteger('AfterRunSeconds'));
+            $seconds = $this->getConfiguredPersonTimeoutSeconds();
             $due = time() + $seconds;
             $this->WriteAttributeInteger('OffDue', $due);
         }
