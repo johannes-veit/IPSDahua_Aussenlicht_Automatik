@@ -1,6 +1,6 @@
 # Dahua Personenerkennung / Außenlicht-Automatik für IP-Symcon 9
 
-Version **0.3.6**.
+Version **0.3.7**.
 
 ## Zweck
 
@@ -44,7 +44,7 @@ Nach wiederholt abgewiesenem Login stoppt das Modul weitere Versuche, damit ein 
 
 ## Universelle Personenerkennung
 
-Version 0.3.5 verarbeitet sowohl direkte SMD-Ereignisse als auch IVS-Ereignisse.
+Version 0.3.7 verarbeitet sowohl direkte SMD-Ereignisse als auch IVS-Ereignisse.
 
 Direkt erkannt werden u. a.:
 
@@ -181,71 +181,51 @@ Damit sind Befehl und Istzustand bewusst getrennt:
 - Sonnenaufgang entzieht die Freigabe; nur automatik-eigenes Licht wird ausgeschaltet.
 - `ApplyChanges()` sendet keinen Lichtbefehl.
 
-## Sichere Ausschaltentscheidung (v0.3.6)
+## Klassischer Bewegungsmelder (seit 0.3.7)
 
-Der letzte echte Human-START/STOP/PULSE aktualisiert intern `LastHumanActivity`.
-Der Zeitstempel der sichtbaren Symcon-Variable ist nur zur Diagnose geeignet:
-`VariableUpdated` bedeutet ein Schreiben des Variablenwertes, nicht zwingend
-ein neu erkanntes Objekt. `VariableChanged` zeigt nur Änderungen zwischen
-AN und AUS. Daher wird die Schaltentscheidung aus der direkten Event-Auswertung
-und nicht aus dem Statusvariablen-Zeitstempel getroffen.
+**Nur eine einzige Zeit je Kamera:** `AfterRunSeconds` (Default 180 Sekunden).
+Die zusätzliche Einstellung `StayQuietSeconds` / Aufenthaltsschutz wurde
+vollständig entfernt und hat keinerlei Wirkung mehr. Ein Update bewahrt den
+bisherigen individuellen Nachlaufwert.
 
-Nach Ablauf eines Timers prüft das Modul die **absolute gespeicherte Frist
-`OffDue`**, die letzte echte Human-Aktivität, den laufenden Human-Status und
-die Kamera-Streamfrische. Hat eine neue Erkennung das Fenster verlängert,
-wird der Timer neu geplant und **kein** AUS-Befehl gesendet.
+- Ein echter Dahua-Human-`START` oder `PULSE` schaltet bei Nacht das Licht
+  automatisch EIN und setzt den Ausschalttermin auf
+  **Zeitpunkt dieser Meldung + AfterRunSeconds**.
+- Jede weitere echte Human-Meldung verlängert denselben Termin. Das gilt auch
+  bei wiederholtem `START`, während `Person erkannt` bereits AN ist.
+- Ein passender `STOP` setzt `Person erkannt` AUS, verlängert aber den
+  Lichtnachlauf **nicht**. Der ursprünglich zugesagte Termin bleibt bestehen.
+- Bei ausbleibendem STOP verwirft der Watchdog alte aktive START-Ereignisse
+  spätestens nach der individuellen Instanzzeit (+ max. 15 s Prüftakt).
+  **Dabei startet kein zweiter voller Nachlauf.**
+- Der Ausschalt-Timer schützt vor vorzeitiger Ausführung, prüft bei Ablauf
+  noch aktive Human-Erkennungen und die Gesundheit des Kamera-Eventstreams
+  und sendet nur für **selbst eingeschaltetes** Licht genau einen AUS-Befehl.
+- Bei unterbrochenem Stream verzögert die bereits vorhandene, begrenzte
+  Fehler-Schonfrist das Abschalten. Der Watchdog baut die Socket-Verbindung
+  bei Bedarf selbst neu auf; ein Reconnect allein beweist keine Abwesenheit.
+- Tageslicht-/Sonnenaufgangsgrenzen und die manuelle GT8-/LCN-Bedienung
+  haben weiter Vorrang. Es werden keine Kameraregeln verändert.
 
-HTTP-Heartbeats zeigen nur die Verbindung, **nicht die Anwesenheit von Gästen**.
-Bei gesundem Eventstream ist deshalb ein Reconnect am Ablaufdatum unnötig:
-Er würde keine aktuell still sitzenden Personen nachweisen und kann selbst
-START/STOP-Ereignisse unterbrechen. Bei veraltetem/unterbrochenem Stream
-gilt weiterhin der bestehende automatische Socket-Neuaufbau mit begrenzter
-Ausfall-Schonfrist.
+Die in Symcon sichtbare Variable `Person erkannt` ist weiterhin ein
+**Human-Ereignisstatus**, kein verlässlicher Nachweis kontinuierlicher
+Anwesenheit. Für die Nachlaufzeit wird der intern gespeicherte Zeitstempel
+des letzten echten Human-START/PULSE verwendet. `VariableUpdated` allein
+reicht dafür nicht, weil auch gleichbleibende Werte neu geschrieben werden
+können und STOP keine erneute Bewegung bedeutet.
 
-## Längere Aufenthalte / Grillabend (seit 0.3.5)
-
-`Person erkannt` ist ein Echtzeit-Human-Ereignisstatus, kein zuverlässiger
-Nachweis einer dauerhaften Anwesenheit: Wer still sitzt, kann ohne weitere
-SMD/IVS-Erkennung aus dem Kamerastatus verschwinden.
-
-**Neue individuelle Einstellung:** `StayQuietSeconds` – Licht-Aufenthaltsschutz,
-in Sekunden, 0 bis 21600; Standard 0 = bestehendes Verhalten unverändert.
-Für **JV Terrasse** empfehlen sich **3600 Sekunden (eine Stunde)**. Jede neue,
-zugeordnete Human-Meldung verlängert die Ruhezeit. Die alte Nachlaufzeit
-`AfterRunSeconds` bleibt separat bestehen. Der spätere der beiden Zeitpunkte
-entscheidet über das nächtliche Abschalten; der Human-Status selbst wird durch
-diesen Licht-Aufenthaltsschutz **nicht künstlich auf AN gehalten**.
-
-Bei AUS wird der wirkliche Dahua-Eventstream auf Aktualität geprüft (HTTP 200,
-Parent Socket 102 und letzte empfangene Daten maximal 25 Sekunden alt).
-Im Fehlerfall wartet die Automatik zunächst und der vorhandene Watchdog kann
-die Verbindung erneut aufbauen. Die weitere Schonfrist beträgt – aus
-Instanzwerten abgeleitet – mindestens 60, höchstens 900 Sekunden. Bleibt die
-Kamera dauerhaft nicht verifizierbar, darf nach der Schonfrist ausgeschaltet
-werden, damit das Licht nicht unbegrenzt AN bleibt. Ein neu gestarteter
-Stream allein ist **keine** Bestätigung für eine leere Terrasse.
-
-**Manuelles AUS** während der Ruhephase sperrt ein sofortiges Wieder-EIN durch
-eine neue Personenerkennung. Sonnenaufgang schaltet auto-eigenes Licht
-weiterhin unabhängig vom Aufenthaltsschutz aus. Reine Personenerkennungs-
-Instanzen ohne Lichtsteuerung schalten kein Licht.
-
-Im vorhandenen Debug/State werden `LastHumanActivity` und Alter,
-`QuietHoldUntil`, `CameraStreamHealthy`, `OffValidationSince` und die
-konfigurierte `StayQuietSeconds`-Zeit ausgegeben, ohne zusätzliche sichtbare
-Symcon-Variablen.
-
-**Grenze:** Vollständig regungslos sitzende Personen kann eine
-bewegungsbasierte Kamera nicht sicher nachweisen. Eine bewusst manuell
-eingeschaltete Dauerbeleuchtung ist die verlässlichste Wahl, wenn auch nach
-einer Stunde völliger Ruhe keine Abschaltung stattfinden darf.
+**Beispiele:** Einmaliges Vorbeigehen mit 180 s Nachlauf → ca. drei Minuten
+Licht. Bei neuen Human-START/PULSE nach 120 s → die drei Minuten beginnen
+neu. Ohne weitere positive Erkennung folgt nach Fristende AUS, außer eine
+aktive Human-Erkennung oder eine zeitlich begrenzte Fehlerprüfung verhindert es.
+Still sitzende Menschen erkennt diese bewegungsabhängige Kamera nicht sicher.
 
 ## Nachlauf
 
-Standard: **180 Sekunden**, je Instanz individuell unter `AfterRunSeconds` einstellbar.
-Derselbe Instanzwert wird für die maximale Laufzeit eines Human-START ohne STOP
-verwendet; bei regulärem STOP endet `Person erkannt` sofort. Bei fehlendem STOP
-folgen nacheinander der instanzabhängige Timeout und der instanzabhängige Lichtnachlauf.
+Standard: **180 Sekunden**, je Instanz unter `AfterRunSeconds` einstellbar.
+Jede neue echte positive Human-Meldung startet die Frist neu; STOP löst
+keinen weiteren vollständigen Nachlauf aus. Derselbe Wert dient als
+Schutzgrenze für verlorene STOP-Meldungen.
 
 Sind mehrere Human-Ereignisse gleichzeitig aktiv, beginnt der Nachlauf erst, wenn alle beendet sind.
 

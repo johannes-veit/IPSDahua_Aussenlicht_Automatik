@@ -94,28 +94,13 @@
         {
           "type": "NumberSpinner",
           "name": "AfterRunSeconds",
-          "caption": "Zeit je Kamera: Licht-Nachlauf / verlorener Human-STOP (Sekunden)",
+          "caption": "Nachlauf je Kamera – bei jeder Personenerkennung neu starten (Sekunden)",
           "minimum": 10,
           "maximum": 3600
         },
         {
           "type": "Label",
-          "caption": "Jede Instanz nutzt ihren eigenen Wert: fehlendes STOP beendet Person erkannt nach dieser Zeit (Watchdog max. 15 s später); der Lichtnachlauf beginnt erst danach. Eine reguläre STOP-Meldung beendet Person erkannt sofort."
-        },
-        {
-          "type": "NumberSpinner",
-          "name": "StayQuietSeconds",
-          "caption": "Aufenthaltsschutz – Licht-Ruhezeit nach letzter Human-Meldung (Sekunden, 0 = AUS)",
-          "minimum": 0,
-          "maximum": 21600
-        },
-        {
-          "type": "Label",
-          "caption": "Beispiel Terrasse/Grillabend: 3600 = mindestens 60 Minuten ohne neue Personenerkennung. Jede neue Human-Meldung verlängert diese Ruhezeit. Nach echter STOP-Erkennung bleibt Person erkannt AUS, während das Licht weiterhin AN bleiben kann. 0 bewahrt bisheriges Verhalten. Pro Kamera individuell."
-        },
-        {
-          "type": "Label",
-          "caption": "Vor einem nächtlichen AUS wird der Dahua-Ereignisstream geprüft; bei Verbindungsverlust wird vorübergehend gewartet und der vorhandene Watchdog stellt die Verbindung wieder her. Ein Kamera-Neustart beweist keine leere Terrasse."
+          "caption": "Klassischer Bewegungsmelder: jeder echte Human-START/PULSE startet diese Zeit erneut. STOP verlängert sie nicht. Fehlende STOP-Ereignisse werden vom Watchdog nach derselben individuellen Zeit beendet. Kamerastream wird vor AUS auf Fehler geprüft."
         },
         {
           "type": "Label",

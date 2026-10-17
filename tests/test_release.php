@@ -14,8 +14,8 @@ $module = json_decode((string) file_get_contents($root . '/AussenlichtAutomatik2
 $source = (string) file_get_contents($root . '/AussenlichtAutomatik2/module.php');
 $form = (string) file_get_contents($root . '/AussenlichtAutomatik2/form.json');
 
-if (($library['version'] ?? '') !== '0.3.6' || (int) ($library['build'] ?? 0) < 13) {
-    failRelease('library.json ist nicht auf 0.3.6/build>=13');
+if (($library['version'] ?? '') !== '0.3.7' || (int) ($library['build'] ?? 0) < 14) {
+    failRelease('library.json ist nicht auf 0.3.7/build>=14');
 }
 if (($library['id'] ?? '') !== '{E5E78612-3E17-4E92-9D0C-A2B0F8E1B690}') {
     failRelease('Library-GUID wurde unerwartet verändert');
@@ -41,17 +41,21 @@ foreach ([
     "private function expireStaleHumanSignals(int \$now): void",
     "getConfiguredPersonTimeoutSeconds()",
     "ReadPropertyInteger('AfterRunSeconds')",
-    "RegisterPropertyInteger('StayQuietSeconds', 0)",
     "RegisterAttributeInteger('LastHumanActivity', 0)",
     "RegisterAttributeInteger('OffValidationSince', 0)",
     "private function isCameraStreamHealthy(int \$now): bool",
-    "private function getQuietHoldUntil(): int",
-    "ManualQuietLockUntil",
-    "max(\$offDue, \$quietDue)",
-    "OffRemainingSeconds"
+    "OffRemainingSeconds",
+    "private function renewLightFromHumanEvent(): void",
+    "LastHumanActivity",
+    "RegisterAttributeBoolean('ClassicMotionMigrated', false)"
 ] as $needle) {
     if (!str_contains($source, $needle)) {
         failRelease('Release-Code fehlt: ' . $needle);
+    }
+}
+foreach (["StayQuietSeconds", "getQuietHoldUntil", "ManualQuietLockUntil"] as $removed) {
+    if (str_contains($source, $removed) || str_contains($form, $removed)) {
+        failRelease('Aufenthaltsschutz muss vollständig entfernt sein: ' . $removed);
     }
 }
 foreach (['192.168.107.110', '48535', '44137'] as $legacyHardcode) {
