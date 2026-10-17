@@ -1,6 +1,6 @@
 # Dahua Personenerkennung / Außenlicht-Automatik für IP-Symcon 9
 
-Version **0.3.3**.
+Version **0.3.4**.
 
 ## Zweck
 
@@ -44,7 +44,7 @@ Nach wiederholt abgewiesenem Login stoppt das Modul weitere Versuche, damit ein 
 
 ## Universelle Personenerkennung
 
-Version 0.3.3 verarbeitet sowohl direkte SMD-Ereignisse als auch IVS-Ereignisse.
+Version 0.3.4 verarbeitet sowohl direkte SMD-Ereignisse als auch IVS-Ereignisse.
 
 Direkt erkannt werden u. a.:
 
@@ -62,17 +62,18 @@ Bei IVS-Ereignissen wird die Objektklassifizierung ausgewertet, z. B.:
 
 Dahua kann `data={...}` über mehrere Zeilen und mehrere TCP-Chunks verteilen. Der Parser sammelt das Ereignis bis zum vollständigen JSON-Ende und wertet es erst dann aus. Multipart-Boundaries, Heartbeats und beliebige TCP-Chunk-Grenzen werden dabei toleriert.
 
-### Schutz bei verlorenem STOP (0.3.3)
+### Schutz bei verlorenem STOP (seit 0.3.3; Instanzzeit seit 0.3.4)
 
 Der Dahua-Heartbeat ist lediglich eine Bestätigung, dass die TCP-Verbindung lebt.
 Er ist **kein** Beleg dafür, dass eine zuvor erkannte Person noch vorhanden ist.
 Fehlt der passende Human-STOP, entfernt der Watchdog (alle 15 Sekunden) das einzelne
-START-Ereignis nach **180 Sekunden ohne erneuten START**. Andere aktuelle Human-
-Ereignisse bleiben unverändert aktiv. Bei einem neuen START beginnt das 180-s-Fenster
-neu. Das ist eine konservative Zeitbegrenzung, **kein Beweis physischer Abwesenheit**.
+START-Ereignis nach der **jeweils in der Kamera-Instanz eingestellten Zeit**
+(`AfterRunSeconds`, Standard 180 Sekunden) ohne erneuten START. Andere aktuelle
+Human-Ereignisse bleiben unverändert aktiv. Bei einem neuen START beginnt das
+individuelle Zeitfenster erneut. Das ist eine konservative Zeitbegrenzung, **kein Beweis physischer Abwesenheit**.
 
 Bei einem Socket-/Stream-Neustart werden die alten Zustände nicht übernommen.
-Das Ende der letzten Erkennung startet die reguläre, getrennte **180-s-Lichtnachlaufzeit**;
+Das Ende der letzten Erkennung startet den anschließenden Lichtnachlauf mit **demselben individuell in dieser Instanz eingestellten Wert**;
 ein manuell eingeschaltetes Licht wird nicht automatisch ausgeschaltet.
 Die Instanz schreibt die Bereinigung ins Debug (kein zusätzliches Symcon-Objekt).
 
@@ -182,7 +183,10 @@ Damit sind Befehl und Istzustand bewusst getrennt:
 
 ## Nachlauf
 
-Standard: **180 Sekunden** nach vollständigem Ende der Personenerkennung.
+Standard: **180 Sekunden**, je Instanz individuell unter `AfterRunSeconds` einstellbar.
+Derselbe Instanzwert wird für die maximale Laufzeit eines Human-START ohne STOP
+verwendet; bei regulärem STOP endet `Person erkannt` sofort. Bei fehlendem STOP
+folgen nacheinander der instanzabhängige Timeout und der instanzabhängige Lichtnachlauf.
 
 Sind mehrere Human-Ereignisse gleichzeitig aktiv, beginnt der Nachlauf erst, wenn alle beendet sind.
 
