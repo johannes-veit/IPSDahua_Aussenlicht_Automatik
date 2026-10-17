@@ -1,6 +1,6 @@
 # Dahua Personenerkennung / Außenlicht-Automatik für IP-Symcon 9
 
-Version **0.3.5**.
+Version **0.3.6**.
 
 ## Zweck
 
@@ -180,6 +180,27 @@ Damit sind Befehl und Istzustand bewusst getrennt:
 - Eine neue Person während des Nachlaufs stoppt den Ausschalt-Timer wieder.
 - Sonnenaufgang entzieht die Freigabe; nur automatik-eigenes Licht wird ausgeschaltet.
 - `ApplyChanges()` sendet keinen Lichtbefehl.
+
+## Sichere Ausschaltentscheidung (v0.3.6)
+
+Der letzte echte Human-START/STOP/PULSE aktualisiert intern `LastHumanActivity`.
+Der Zeitstempel der sichtbaren Symcon-Variable ist nur zur Diagnose geeignet:
+`VariableUpdated` bedeutet ein Schreiben des Variablenwertes, nicht zwingend
+ein neu erkanntes Objekt. `VariableChanged` zeigt nur Änderungen zwischen
+AN und AUS. Daher wird die Schaltentscheidung aus der direkten Event-Auswertung
+und nicht aus dem Statusvariablen-Zeitstempel getroffen.
+
+Nach Ablauf eines Timers prüft das Modul die **absolute gespeicherte Frist
+`OffDue`**, die letzte echte Human-Aktivität, den laufenden Human-Status und
+die Kamera-Streamfrische. Hat eine neue Erkennung das Fenster verlängert,
+wird der Timer neu geplant und **kein** AUS-Befehl gesendet.
+
+HTTP-Heartbeats zeigen nur die Verbindung, **nicht die Anwesenheit von Gästen**.
+Bei gesundem Eventstream ist deshalb ein Reconnect am Ablaufdatum unnötig:
+Er würde keine aktuell still sitzenden Personen nachweisen und kann selbst
+START/STOP-Ereignisse unterbrechen. Bei veraltetem/unterbrochenem Stream
+gilt weiterhin der bestehende automatische Socket-Neuaufbau mit begrenzter
+Ausfall-Schonfrist.
 
 ## Längere Aufenthalte / Grillabend (seit 0.3.5)
 
